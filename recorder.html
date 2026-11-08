@@ -95,6 +95,7 @@
     <div class="sub" id="usage"></div>
   </div>
   <p class="sub">録音の切り替えは、次に「監視開始」（再起動）を押したときから反映されます。</p>
+  <p class="sub" id="verInfo"></p>
 </div>
 
 <div id="dark"><div id="darkRec">● 記録中</div></div>
@@ -581,6 +582,18 @@ $('pv').addEventListener('touchend', e => {
   swX = null;
   if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) playAt(dx < 0 ? cur - 1 : cur + 1);
 }, { passive: true });
+
+// ---------- 版の確認（古い画面が使い回されないように） ----------
+// iPhoneは同じページを最大10分ほど使い回すため、起動時に最新版があれば読み込み直す
+const APP_VER = 5;
+$('verInfo').textContent = 'アプリの版：' + APP_VER;
+(async () => {
+  try {
+    const t = await (await fetch(location.pathname + '?check=' + Date.now(), { cache: 'no-store' })).text();
+    const m = t.match(/const APP_VER = (\d+);/);
+    if (m && Number(m[1]) > APP_VER && !wanted) location.replace(location.pathname + '?v=' + m[1]);
+  } catch (e) {}
+})();
 
 // ---------- 起動 ----------
 (async () => {
