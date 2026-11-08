@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="ドアカメラ録画">
+<title>ドアカメラ録画</title>
+<style>
+  :root { --bg:#0b0b0b; --panel:#1a1a1a; --fg:#eee; --sub:#9a9a9a; --accent:#3b82f6; --red:#ef4444; --ok:#22c55e; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:-apple-system, sans-serif; font-size:15px; }
+  body { padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  main { max-width:640px; margin:0 auto; padding:12px 16px 40px; }
+  h1 { font-size:17px; margin:4px 0 10px; }
+  .view { position:relative; width:100%; aspect-ratio:16/9; background:#000; border-radius:8px; overflow:hidden; touch-action:none; }
+  .view video { width:100%; height:100%; object-fit:cover; display:block; }
+  #grid { position:absolute; inset:0; display:grid; grid-template-columns:repeat(16,1fr); grid-template-rows:repeat(9,1fr); pointer-events:none; }
+  #grid div { border:1px solid rgba(255,255,255,.08); }
+  #grid div.off { background:rgba(0,0,0,.65); }
+  #grid.edit { pointer-events:auto; }
+  #grid.edit div { border-color:rgba(255,255,255,.25); }
+  .badge { position:absolute; top:8px; left:8px; color:var(--red); font-weight:700; font-size:14px; text-shadow:0 0 4px #000; display:none; }
+  .meter { position:absolute; left:0; bottom:0; height:4px; background:var(--ok); width:0; transition:width .2s; }
+  .panel { background:var(--panel); border-radius:8px; padding:12px; margin-top:10px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:6px 0; }
+  .row label { flex:none; }
+  input[type=range] { flex:1; }
+  select, button { font-size:15px; padding:9px 13px; border-radius:8px; border:0; color:#fff; background:#333; }
+  button.primary { background:var(--accent); }
+  button.warn { background:#7f1d1d; }
+  button:disabled { opacity:.4; }
+  .sub { color:var(--sub); font-size:13px; }
+  .btns { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  #status { font-size:13px; color:var(--sub); margin-top:6px; min-height:18px; }
+  #dark { position:fixed; inset:0; background:#000; display:none; z-index:50; }
+  #darkRec { position:absolute; color:var(--red); font-size:13px; font-weight:700; display:none; }
+  #list { position:fixed; inset:0; background:var(--bg); z-index:40; display:none; overflow:auto; padding:calc(env(safe-area-inset-top) + 12px) 16px 40px; }
+  .clip { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:10px 0; border-bottom:1px solid #222; }
+  .clip .name { font-variant-numeric:tabular-nums; }
+  #player { width:100%; border-radius:8px; margin-top:8px; display:none; background:#000; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ドアカメラ録画</h1>
+
+  <div class="view" id="view">
+    <video id="live" playsinline muted autoplay></video>
+    <div id="grid"></div>
+    <div class="badge" id="recBadge">● 記録中</div>
+    <div class="meter" id="meter"></div>
+  </div>
+  <div id="status">「監視開始」を押してください</div>
+
+  <div class="btns">
+    <button class="primary" id="startBtn">監視開始</button>
+    <button id="listBtn">録画一覧</button>
+    <button id="darkBtn" disabled>今すぐ暗くする</button>
+  </div>
+
+  <div class="panel">
+    <div class="row"><label>ズーム</label><input type="range" id="zoom" min="1" max="1" step="0.1" value="1" disabled><span id="zoomVal" class="sub">-</span></div>
+    <div class="row"><label>検知感度</label><input type="range" id="sens" min="1" max="100" step="1"><span id="sensVal" class="sub"></span></div>
+    <div class="row"><label>検知エリア</label><span class="sub" id="areaInfo"></span><button id="areaBtn">指定する</button></div>
+    <div class="row"><label>自動消灯</label>
+      <select id="dim"><option value="0">なし</option><option value="1">1分</option><option value="5">5分</option></select></div>
+    <div class="row"><label>録音</label>
+      <select id="audio"><option value="1">オン</option><option value="0">オフ</option></select></div>
+    <div class="row"><label>本体の保存上限</label>
+      <select id="cap"><option>5</option><option>10</option><option>20</option><option>30</option><option>40</option></select><span class="sub">GB</span></div>
+    <div class="sub" id="usage"></div>
+  </div>
+  <p class="sub">録音の切り替えは、次に「監視開始」を押したときから反映されます。</p>
+</main>
+
+<div id="dark"><div id="darkRec">● 記録中</div></div>
+
+<div id="list">
+  <div class="row"><h1 style="margin:0">録画一覧</h1><button id="closeList">閉じる</button></div>
+  <div class="sub" id="listUsage"></div>
+  <video id="player" controls playsinline></video>
+  <div id="clips"></div>
+</div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+
+// ---------- 設定 ----------
+const DEF = { zoom: 1, sens: 60, mask: Array(144).fill(1), dim: '1', audio: '1', cap: '20' };
+let cfg = Object.assign({}, DEF);
+try { Object.assign(cfg, JSON.parse(localStorage.getItem('doorcam-cfg') || '{}')); } catch (e) {}
+const saveCfg = () => { try { localStorage.setItem('doorcam-cfg', JSON.stringify(cfg)); } catch (e) {} };
+
+const PRE_MS = 1000, POST_MS = 3000, MAX_MS = 120000, FPS = 15;
+
+// ---------- 保存（IndexedDB） ----------
+let db;
+function openDB() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('doorcam', 1);
+    r.onupgradeneeded = () => {
+      r.result.createObjectStore('meta', { keyPath: 'name' });
+      r.result.createObjectStore('blobs');
+    };
+    r.onsuccess = () => { db = r.result; res(); };
+    r.onerror = () => rej(r.error);
+  });
+}
+const tx = (stores, mode) => db.transaction(stores, mode);
+function reqP(r) { return new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+async function allMeta() { return (await reqP(tx('meta').objectStore('meta').getAll())).sort((a, b) => a.name < b.name ? 1 : -1); }
+async function putClip(meta, blob) {
+  const t = tx(['meta', 'blobs'], 'readwrite');
+  t.objectStore('meta').put(meta); t.objectStore('blobs').put(blob, meta.name);
+  await new Promise((res, rej) => { t.oncomplete = res; t.onerror = () => rej(t.error); });
+}
+async function delClip(name) {
+  const t = tx(['meta', 'blobs'], 'readwrite');
+  t.objectStore('meta').delete(name); t.objectStore('blobs').delete(name);
+  await new Promise(res => { t.oncomplete = res; });
+}
+const getBlob = name => reqP(tx('blobs').objectStore('blobs').get(name));
+async function enforceCap() {
+  const list = await allMeta();
+  let total = list.reduce((s, m) => s + m.size, 0);
+  const cap = Number(cfg.cap) * 1024 ** 3;
+  for (let i = list.length - 1; i >= 0 && total > cap; i--) { await delClip(list[i].name); total -= list[i].size; }
+  return total;
+}
+async function showUsage() {
+  const list = await allMeta();
+  const gb = list.reduce((s, m) => s + m.size, 0) / 1024 ** 3;
+  const txt = `本体に${list.length}本・${gb.toFixed(2)}GB保存（上限${cfg.cap}GB）`;
+  $('usage').textContent = txt; $('listUsage').textContent = txt;
+}
+
+// ---------- 画面の設定UI ----------
+$('sens').value = cfg.sens; $('sensVal').textContent = cfg.sens;
+$('dim').value = cfg.dim; $('audio').value = cfg.audio; $('cap').value = cfg.cap;
+$('sens').oninput = e => { cfg.sens = Number(e.target.value); $('sensVal').textContent = cfg.sens; saveCfg(); };
+$('dim').onchange = e => { cfg.dim = e.target.value; saveCfg(); touch(); };
+$('audio').onchange = e => { cfg.audio = e.target.value; saveCfg(); };
+$('cap').onchange = async e => { cfg.cap = e.target.value; saveCfg(); await enforceCap(); showUsage(); };
+
+// 検知エリア（16×9マス。暗いマスは検知しない）
+const grid = $('grid');
+for (let i = 0; i < 144; i++) { const d = document.createElement('div'); grid.appendChild(d); }
+function drawGrid() {
+  [...grid.children].forEach((d, i) => d.classList.toggle('off', !cfg.mask[i]));
+  const on = cfg.mask.filter(Boolean).length;
+  $('areaInfo').textContent = on === 144 ? '全体' : `${on}/144マス`;
+}
+drawGrid();
+let editing = false, paintVal = 1;
+$('areaBtn').onclick = () => {
+  editing = !editing;
+  grid.classList.toggle('edit', editing);
+  $('areaBtn').textContent = editing ? '完了' : '指定する';
+  if (!editing) saveCfg();
+  setStatus(editing ? '映像をなぞると、検知しないマス（暗いマス）を切り替えられます' : '');
+};
+function cellAt(ev) {
+  const r = grid.getBoundingClientRect();
+  const x = Math.floor((ev.clientX - r.left) / r.width * 16), y = Math.floor((ev.clientY - r.top) / r.height * 9);
+  return (x < 0 || x > 15 || y < 0 || y > 8) ? -1 : y * 16 + x;
+}
+grid.addEventListener('pointerdown', ev => {
+  if (!editing) return;
+  const i = cellAt(ev); if (i < 0) return;
+  paintVal = cfg.mask[i] ? 0 : 1; cfg.mask[i] = paintVal; drawGrid();
+  grid.setPointerCapture(ev.pointerId);
+});
+grid.addEventListener('pointermove', ev => {
+  if (!editing || !grid.hasPointerCapture(ev.pointerId)) return;
+  const i = cellAt(ev); if (i >= 0 && cfg.mask[i] !== paintVal) { cfg.mask[i] = paintVal; drawGrid(); }
+});
+
+function setStatus(t) { $('status').textContent = t; }
+
+// ---------- カメラ・マイク ----------
+const live = $('live');
+let stream, vtrack, audioCtx, delayedAudio, running = false;
+
+async function start() {
+  try {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    const wantAudio = cfg.audio === '1';
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: FPS } },
+      audio: wantAudio ? { echoCancellation: false, noiseSuppression: false } : false
+    });
+    live.srcObject = stream;
+    await live.play();
+    vtrack = stream.getVideoTracks()[0];
+    vtrack.onended = () => { setStatus('カメラが止まりました。「監視開始」を押し直してください'); running = false; };
+    setupZoom();
+    // 音声は1秒遅らせて、映像の遅延と合わせる
+    delayedAudio = null;
+    if (wantAudio && stream.getAudioTracks().length) {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      await audioCtx.resume();
+      const src = audioCtx.createMediaStreamSource(new MediaStream(stream.getAudioTracks()));
+      const delay = audioCtx.createDelay(3); delay.delayTime.value = PRE_MS / 1000;
+      const dest = audioCtx.createMediaStreamDestination();
+      src.connect(delay).connect(dest);
+      delayedAudio = dest.stream.getAudioTracks()[0];
+    }
+    running = true;
+    $('startBtn').textContent = '再起動';
+    $('darkBtn').disabled = false;
+    requestWakeLock();
+    startCapture();
+    touch();
+    setStatus('監視中');
+  } catch (e) {
+    setStatus('カメラ・マイクを開けませんでした：' + e.message);
+  }
+}
+$('startBtn').onclick = start;
+
+function setupZoom() {
+  const c = vtrack.getCapabilities ? vtrack.getCapabilities() : {};
+  const z = $('zoom');
+  if (c.zoom && c.zoom.max > c.zoom.min) {
+    z.min = c.zoom.min; z.max = c.zoom.max; z.step = c.zoom.step || 0.1; z.disabled = false;
+    const val = Math.min(Math.max(cfg.zoom, c.zoom.min), c.zoom.max);
+    z.value = val; applyZoom(val);
+  } else { z.disabled = true; $('zoomVal').textContent = '使えません'; }
+}
+async function applyZoom(val) {
+  $('zoomVal').textContent = Number(val).toFixed(1) + '倍';
+  try { await vtrack.applyConstraints({ advanced: [{ zoom: Number(val) }] }); } catch (e) {}
+}
+$('zoom').oninput = e => { cfg.zoom = Number(e.target.value); applyZoom(cfg.zoom); saveCfg(); };
+
+// 画面が勝手に消えないようにする
+let wakeLock = null;
+async function requestWakeLock() {
+  try { if ('wakeLock' in navigator) { wakeLock = await navigator.wakeLock.request('screen'); } } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && running) {
+    requestWakeLock();
+    if (audioCtx && audioCtx.state !== 'running') audioCtx.resume();
+    if (!vtrack || vtrack.readyState === 'ended') start();
+  }
+});
+
+// ---------- 1秒前から残すための映像バッファ ----------
+const frames = []; // {t, bmp}
+let lastCap = 0;
+function startCapture() {
+  const onFrame = async () => {
+    const now = performance.now();
+    if (now - lastCap >= 1000 / FPS - 5 && live.videoWidth) {
+      lastCap = now;
+      try { const bmp = await createImageBitmap(live); frames.push({ t: now, bmp }); } catch (e) {}
+      while (frames.length && frames[0].t < now - PRE_MS - 700) frames.shift().bmp.close();
+    }
+    if (live.requestVideoFrameCallback) live.requestVideoFrameCallback(onFrame); else setTimeout(onFrame, 1000 / FPS);
+  };
+  if (!startCapture.on) { startCapture.on = true; onFrame(); }
+}
+
+// ---------- 動体検知 ----------
+const dc = document.createElement('canvas'); dc.width = 96; dc.height = 54;
+const dctx = dc.getContext('2d', { willReadFrequently: true });
+let prevGray = null, prevMean = 0, hits = 0;
+function detectTick() {
+  if (!running || !live.videoWidth) return;
+  dctx.drawImage(live, 0, 0, 96, 54);
+  const px = dctx.getImageData(0, 0, 96, 54).data;
+  const g = new Uint8Array(96 * 54);
+  let sum = 0;
+  for (let i = 0, j = 0; i < px.length; i += 4, j++) { g[j] = (px[i] * 3 + px[i + 1] * 6 + px[i + 2]) / 10; sum += g[j]; }
+  const mean = sum / g.length;
+  let motion = false, ratio = 0;
+  if (prevGray) {
+    // 照明が一斉に変わったとき（廊下の電気など）は無視
+    if (Math.abs(mean - prevMean) < 18) {
+      let changed = 0, area = 0;
+      for (let y = 0; y < 54; y++) for (let x = 0; x < 96; x++) {
+        if (!cfg.mask[Math.floor(y / 6) * 16 + Math.floor(x / 6)]) continue;
+        area++;
+        const k = y * 96 + x;
+        if (Math.abs(g[k] - prevGray[k]) > 25) changed++;
+      }
+      ratio = area ? changed / area : 0;
+      const th = 0.002 + (100 - cfg.sens) / 100 * 0.05;
+      hits = ratio > th ? hits + 1 : 0;
+      motion = hits >= 2; // 2回続いたら検知
+    } else hits = 0;
+  }
+  prevGray = g; prevMean = mean;
+  $('meter').style.width = Math.min(100, ratio * 1000) + '%';
+  onMotion(motion);
+}
+setInterval(detectTick, 250);
+
+// ---------- 録画 ----------
+const rc = document.createElement('canvas'); rc.width = 1280; rc.height = 720;
+const rctx = rc.getContext('2d');
+let rec = null; // {mr, startLive, name, chunks}
+let lastMotion = 0, drawTimer = null, recStream = null;
+
+function pad(n) { return String(n).padStart(2, '0'); }
+function stamp(d) { return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`; }
+function label(d) { return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
+
+function drawDelayed() {
+  const target = performance.now() - PRE_MS;
+  let f = null;
+  for (const fr of frames) { if (fr.t <= target) f = fr; else break; }
+  if (!f) return;
+  if (rc.width !== f.bmp.width) { rc.width = f.bmp.width; rc.height = f.bmp.height; }
+  rctx.drawImage(f.bmp, 0, 0);
+  // 日時を映像に書き込む
+  const d = new Date(Date.now() - (performance.now() - f.t));
+  rctx.font = `${Math.round(rc.height / 26)}px -apple-system, sans-serif`;
+  rctx.fillStyle = 'rgba(0,0,0,.5)';
+  const txt = label(d), w = rctx.measureText(txt).width;
+  rctx.fillRect(rc.width - w - 24, rc.height - rc.height / 18 - 14, w + 16, rc.height / 18 + 6);
+  rctx.fillStyle = '#fff';
+  rctx.fillText(txt, rc.width - w - 16, rc.height - 16);
+}
+
+function newRecorder(firstStart) {
+  if (!recStream) {
+    const vt = rc.captureStream(FPS).getVideoTracks()[0];
+    recStream = new MediaStream(delayedAudio ? [vt, delayedAudio] : [vt]);
+  }
+  const type = ['video/mp4;codecs=avc1', 'video/mp4'].find(t => MediaRecorder.isTypeSupported(t)) || '';
+  const mr = new MediaRecorder(recStream, type ? { mimeType: type, videoBitsPerSecond: 2500000 } : {});
+  // 録画される映像は1秒遅れなので、ファイル名もその分さかのぼった時刻にする
+  const r = { mr, startLive: performance.now(), chunks: [], first: firstStart };
+  r.name = stamp(new Date(Date.now() - PRE_MS));
+  mr.ondataavailable = e => { if (e.data && e.data.size) r.chunks.push(e.data); };
+  mr.onstop = () => saveRec(r);
+  mr.start();
+  return r;
+}
+
+function onMotion(m) {
+  const now = performance.now();
+  if (m) lastMotion = now;
+  if (!rec && m && running) {
+    drawTimer = setInterval(drawDelayed, 1000 / FPS);
+    drawDelayed();
+    rec = newRecorder(true);
+    showRec(true);
+    return;
+  }
+  if (!rec) return;
+  if (now - lastMotion >= POST_MS + PRE_MS) {
+    rec.endLive = now; rec.mr.stop(); rec = null;
+    clearInterval(drawTimer); drawTimer = null;
+    recStream.getVideoTracks()[0].stop(); recStream = null;
+    showRec(false);
+  } else if (now - rec.startLive >= MAX_MS) {
+    // 2分を超えたら、すき間なく次の動画へ
+    const old = rec; rec = newRecorder(false); old.endLive = now; old.mr.stop();
+  }
+}
+
+async function saveRec(r) {
+  const blob = new Blob(r.chunks, { type: r.mr.mimeType || 'video/mp4' });
+  if (!blob.size) return;
+  let name = r.name, n = 2;
+  const names = new Set((await allMeta()).map(m => m.name));
+  while (names.has(name)) name = `${r.name}_${n++}`;
+  const dur = Math.round(((r.endLive || performance.now()) - r.startLive) / 1000);
+  try {
+    await putClip({ name, size: blob.size, dur, type: blob.type, cont: !r.first, uploaded: false }, blob);
+    await enforceCap();
+  } catch (e) { setStatus('保存できませんでした：' + e.message); }
+  showUsage();
+}
+
+function showRec(on) {
+  $('recBadge').style.display = on ? 'block' : 'none';
+  const dr = $('darkRec');
+  if (on) { // 焼き付き防止のため、毎回表示位置をずらす
+    dr.style.left = (10 + Math.random() * 70) + '%';
+    dr.style.top = (10 + Math.random() * 75) + '%';
+  }
+  dr.style.display = on ? 'block' : 'none';
+  setStatus(on ? '記録中' : '監視中');
+}
+
+// ---------- 自動消灯 ----------
+let lastTouch = Date.now();
+function touch() { lastTouch = Date.now(); }
+['pointerdown', 'keydown', 'input'].forEach(ev => document.addEventListener(ev, touch, true));
+function setDark(on) { $('dark').style.display = on ? 'block' : 'none'; }
+$('dark').addEventListener('pointerdown', e => { e.stopPropagation(); e.preventDefault(); setDark(false); touch(); });
+$('darkBtn').onclick = () => setDark(true);
+setInterval(() => {
+  const min = Number(cfg.dim);
+  if (running && min > 0 && !editing && $('list').style.display !== 'block' && Date.now() - lastTouch > min * 60000) setDark(true);
+}, 2000);
+
+// ---------- 録画一覧 ----------
+let playingUrl = null;
+async function openList() {
+  $('list').style.display = 'block';
+  await showUsage();
+  const box = $('clips'); box.innerHTML = '';
+  const list = await allMeta();
+  if (!list.length) { box.innerHTML = '<p class="sub">まだ録画はありません</p>'; return; }
+  for (const m of list) {
+    const row = document.createElement('div'); row.className = 'clip';
+    const info = document.createElement('div');
+    info.innerHTML = `<div class="name"></div><div class="sub"></div>`;
+    info.firstChild.textContent = m.name;
+    info.lastChild.textContent = `${m.cont ? '前の続き・' : ''}${m.dur}秒・${(m.size / 1024 / 1024).toFixed(1)}MB`;
+    const btns = document.createElement('div'); btns.className = 'btns'; btns.style.marginTop = 0;
+    const play = document.createElement('button'); play.textContent = '再生';
+    play.onclick = async () => {
+      if (playingUrl) URL.revokeObjectURL(playingUrl);
+      playingUrl = URL.createObjectURL(await getBlob(m.name));
+      const p = $('player'); p.src = playingUrl; p.style.display = 'block'; p.play(); window.scrollTo(0, 0); $('list').scrollTo(0, 0);
+    };
+    const share = document.createElement('button'); share.textContent = '保存';
+    share.onclick = async () => {
+      const blob = await getBlob(m.name);
+      const file = new File([blob], m.name + '.mp4', { type: blob.type || 'video/mp4' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file] }); } catch (e) {} }
+      else alert('この端末では共有できません');
+    };
+    const del = document.createElement('button'); del.textContent = '削除'; del.className = 'warn';
+    del.onclick = async () => { if (confirm(m.name + ' を削除しますか？')) { await delClip(m.name); openList(); } };
+    btns.append(play, share, del);
+    row.append(info, btns); box.appendChild(row);
+  }
+}
+$('listBtn').onclick = openList;
+$('closeList').onclick = () => { $('list').style.display = 'none'; const p = $('player'); p.pause(); p.style.display = 'none'; touch(); };
+
+// ---------- 起動 ----------
+(async () => {
+  try {
+    await openDB();
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+    showUsage();
+  } catch (e) { setStatus('保存領域を開けませんでした：' + e.message); }
+})();
+</script>
+</body>
+</html>
