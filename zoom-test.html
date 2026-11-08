@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ズームテスト</title>
+<style>
+  :root { --bg:#111; --fg:#eee; --sub:#aaa; --accent:#3b82f6; --ng:#ef4444; --ok:#22c55e; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:-apple-system, sans-serif; font-size:15px; }
+  main { padding:16px; max-width:640px; margin:0 auto; }
+  h1 { font-size:18px; margin:0 0 12px; }
+  h2 { font-size:15px; margin:20px 0 8px; }
+  .view { position:relative; width:100%; aspect-ratio:16/9; background:#000; border-radius:8px; overflow:hidden; }
+  video, canvas { width:100%; height:100%; object-fit:contain; display:block; }
+  #cv { position:absolute; inset:0; }
+  button, select { font-size:16px; padding:10px 14px; border-radius:8px; border:0; background:var(--accent); color:#fff; margin:4px 4px 4px 0; }
+  select { background:#333; }
+  button:disabled { opacity:.4; }
+  input[type=range] { width:100%; }
+  .box { background:#1d1d1d; border-radius:8px; padding:12px; margin-top:8px; }
+  .row { display:flex; justify-content:space-between; gap:8px; }
+  .sub { color:var(--sub); font-size:13px; }
+  .ok { color:var(--ok); font-weight:600; }
+  .ng { color:var(--ng); font-weight:600; }
+  pre { white-space:pre-wrap; word-break:break-all; font-size:12px; color:var(--sub); margin:8px 0 0; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>ズームテスト（iPhone SE 第3世代用）</h1>
+  <p class="sub">Safariでカメラのズームが使えるか、使えない場合の切り出しズームの画質を確認します。</p>
+
+  <div>
+    <label class="sub">元の映像の画質</label><br>
+    <select id="res">
+      <option value="720">720p（本番と同じ）</option>
+      <option value="1080">1080p（切り出しズームの画質比較用）</option>
+    </select>
+    <button id="start">カメラ開始</button>
+  </div>
+
+  <div class="view" style="margin-top:12px">
+    <video id="v" playsinline muted autoplay></video>
+    <canvas id="cv" hidden></canvas>
+  </div>
+
+  <h2>結果</h2>
+  <div class="box">
+    <div class="row"><span>カメラのズーム機能</span><span id="nativeResult" class="sub">未確認</span></div>
+    <div class="row"><span>実際の映像サイズ</span><span id="size" class="sub">-</span></div>
+    <pre id="caps"></pre>
+  </div>
+
+  <h2>① カメラのズーム（Safariが対応していれば動く）</h2>
+  <div class="box">
+    <input id="nativeZoom" type="range" min="1" max="1" step="0.1" value="1" disabled>
+    <div class="row sub"><span id="nativeVal">-</span><span>動かして映像が拡大されればOK</span></div>
+  </div>
+
+  <h2>② 切り出しズーム（必ず動く方式）</h2>
+  <div class="box">
+    <input id="digiZoom" type="range" min="1" max="5" step="0.1" value="1" disabled>
+    <div class="row sub"><span id="digiVal">1.0倍</span><span>①と画質を見比べてください</span></div>
+  </div>
+
+  <h2>③ 5秒の録画テスト</h2>
+  <div class="box">
+    <button id="rec" disabled>今の見え方で5秒録画</button>
+    <div id="recInfo" class="sub"></div>
+    <video id="playback" controls playsinline hidden style="margin-top:8px;border-radius:8px"></video>
+    <a id="dl" hidden>ダウンロード</a>
+  </div>
+
+  <p class="sub" style="margin-top:20px">結果の「ズーム機能」の表示と、①②の見え方を教えてください。</p>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const v = $('v'), cv = $('cv'), ctx = cv.getContext('2d');
+let stream, track, digi = 1, useCanvas = false, drawing = false;
+
+$('start').onclick = async () => {
+  try {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    const h = Number($('res').value), w = h === 1080 ? 1920 : 1280;
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: w }, height: { ideal: h } },
+      audio: false
+    });
+    v.srcObject = stream;
+    await v.play();
+    track = stream.getVideoTracks()[0];
+    checkNativeZoom();
+    $('digiZoom').disabled = false;
+    $('rec').disabled = false;
+    if (!drawing) { drawing = true; requestAnimationFrame(draw); }
+  } catch (e) {
+    alert('カメラを開けませんでした：' + e.message);
+  }
+};
+
+function checkNativeZoom() {
+  const s = track.getSettings ? track.getSettings() : {};
+  const c = track.getCapabilities ? track.getCapabilities() : {};
+  $('size').textContent = (s.width || '?') + '×' + (s.height || '?');
+  $('caps').textContent = 'capabilities: ' + JSON.stringify(c);
+  const z = $('nativeZoom');
+  if (c.zoom && c.zoom.max > c.zoom.min) {
+    $('nativeResult').textContent = 'あり（' + c.zoom.min + '〜' + c.zoom.max + '倍）';
+    $('nativeResult').className = 'ok';
+    z.min = c.zoom.min; z.max = c.zoom.max; z.step = c.zoom.step || 0.1;
+    z.value = s.zoom || c.zoom.min; z.disabled = false;
+    $('nativeVal').textContent = Number(z.value).toFixed(1) + '倍';
+  } else {
+    $('nativeResult').textContent = 'なし（②の方式を使います）';
+    $('nativeResult').className = 'ng';
+    z.disabled = true;
+    $('nativeVal').textContent = '使えません';
+  }
+}
+
+$('nativeZoom').oninput = async e => {
+  const val = Number(e.target.value);
+  $('nativeVal').textContent = val.toFixed(1) + '倍';
+  try { await track.applyConstraints({ advanced: [{ zoom: val }] }); }
+  catch (err) { $('nativeVal').textContent = 'エラー：' + err.message; }
+};
+
+$('digiZoom').oninput = e => {
+  digi = Number(e.target.value);
+  $('digiVal').textContent = digi.toFixed(1) + '倍';
+  useCanvas = digi > 1.0001;
+  cv.hidden = !useCanvas;
+};
+
+// 切り出しズーム：中央を切り出して720pの大きさに描く（本番の録画と同じ出力サイズ）
+function draw() {
+  if (v.videoWidth) {
+    if (cv.width !== 1280) { cv.width = 1280; cv.height = 720; }
+    const sw = v.videoWidth / digi, sh = v.videoHeight / digi;
+    const sx = (v.videoWidth - sw) / 2, sy = (v.videoHeight - sh) / 2;
+    ctx.drawImage(v, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+  }
+  requestAnimationFrame(draw);
+}
+
+$('rec').onclick = () => {
+  const src = cv.captureStream ? cv.captureStream(15) : null;
+  if (!src || typeof MediaRecorder === 'undefined') { $('recInfo').textContent = 'このブラウザでは録画できません'; return; }
+  const types = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm'];
+  const type = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
+  const mr = new MediaRecorder(src, type ? { mimeType: type, videoBitsPerSecond: 2500000 } : {});
+  const chunks = [];
+  mr.ondataavailable = e => e.data.size && chunks.push(e.data);
+  mr.onstop = () => {
+    const blob = new Blob(chunks, { type: mr.mimeType || type });
+    const url = URL.createObjectURL(blob);
+    $('playback').src = url; $('playback').hidden = false;
+    const ext = (mr.mimeType || type).includes('mp4') ? 'mp4' : 'webm';
+    $('dl').href = url; $('dl').download = 'zoomtest.' + ext; $('dl').hidden = false;
+    $('recInfo').textContent = '形式：' + (mr.mimeType || type) + '　サイズ：' + (blob.size / 1024 / 1024).toFixed(1) + 'MB';
+    $('rec').disabled = false;
+  };
+  $('rec').disabled = true;
+  $('recInfo').textContent = '録画中…（5秒）';
+  mr.start();
+  setTimeout(() => mr.stop(), 5000);
+};
+</script>
+</body>
+</html>
