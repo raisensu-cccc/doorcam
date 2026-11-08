@@ -42,7 +42,8 @@
   .clip .name { font-variant-numeric:tabular-nums; }
   .view.full { position:fixed; inset:0; z-index:30; width:100vw; height:100vh; height:100dvh; min-height:0; border-radius:0; }
   #settings { position:fixed; inset:0; background:var(--bg); z-index:40; display:none; overflow:auto; padding:calc(env(safe-area-inset-top) + 12px) 16px 40px; }
-  #editBar { display:none; background:#1e3a5f; border-radius:8px; padding:10px 12px; margin-top:8px; }
+  #areaScreen { position:fixed; inset:0; background:var(--bg); z-index:42; display:none; flex-direction:column; padding:calc(env(safe-area-inset-top) + 10px) 16px calc(env(safe-area-inset-bottom) + 12px); }
+  #areaView { flex:1; height:auto; min-height:0; margin:8px 0; }
   .view.full .meter { display:none; }
   #pv { position:fixed; inset:0; background:#000; z-index:45; display:none; flex-direction:column; }
   #pv .top { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:calc(env(safe-area-inset-top) + 8px) 16px 8px; }
@@ -55,14 +56,8 @@
 <main>
   <div class="view" id="view">
     <video id="live" playsinline muted autoplay></video>
-    <div id="grid"></div>
     <div class="badge" id="recBadge">● 記録中</div>
     <div class="meter" id="meter"></div>
-  </div>
-
-  <div id="editBar">
-    <div>検知しないところを指でなぞって暗くしてください（もう一度なぞると戻ります）</div>
-    <div class="btns"><button id="areaReset">すべて検知の対象にする</button><button class="primary" id="areaDone">完了</button></div>
   </div>
 
   <div class="row" style="margin-top:10px"><label>ズーム</label><input type="range" id="zoom" min="1" max="1" step="0.1" value="1" disabled><span id="zoomVal" class="sub">-</span></div>
@@ -75,6 +70,16 @@
     <button id="darkBtn" disabled>暗くする</button>
   </div>
 </main>
+
+<div id="areaScreen">
+  <div class="row"><h1 style="margin:0">検知エリアの指定</h1><button class="primary" id="areaDone">完了</button></div>
+  <div class="sub">検知しないところを指でなぞって暗くしてください（もう一度なぞると戻ります）。この画面以外では暗く表示されません。</div>
+  <div class="view" id="areaView">
+    <video id="areaVid" playsinline muted autoplay></video>
+    <div id="grid" class="edit"></div>
+  </div>
+  <button id="areaReset">すべて検知の対象にする</button>
+</div>
 
 <div id="settings">
   <div class="row"><h1 style="margin:0">設定</h1><button id="closeSet">閉じる</button></div>
@@ -182,7 +187,7 @@ const grid = $('grid');
 for (let i = 0; i < 144; i++) { const d = document.createElement('div'); grid.appendChild(d); }
 let cols = 16, rows = 9;
 function layoutGrid() {
-  const lv = $('live'), vw = lv.videoWidth, vh = lv.videoHeight, box = $('view');
+  const lv = $('live'), vw = lv.videoWidth, vh = lv.videoHeight, box = $('areaView');
   if (!vw || !vh) return;
   const portrait = vh > vw;
   const nc = portrait ? 9 : 16, nr = portrait ? 16 : 9;
@@ -197,6 +202,7 @@ function layoutGrid() {
   grid.style.gridTemplateColumns = `repeat(${cols},1fr)`;
   grid.style.gridTemplateRows = `repeat(${rows},1fr)`;
   const bw = box.clientWidth, bh = box.clientHeight, s = Math.min(bw / vw, bh / vh);
+  if (!bw || !bh) { drawGrid(); return; }
   const w = vw * s, h = vh * s;
   Object.assign(grid.style, { width: w + 'px', height: h + 'px', left: (bw - w) / 2 + 'px', top: (bh - h) / 2 + 'px' });
   drawGrid();
@@ -212,15 +218,19 @@ function drawGrid() {
 }
 drawGrid();
 let editing = false, paintVal = 1;
+// 検知エリアは専用の画面で指定する（ふだんの映像は暗くしない）
 function setEditing(on) {
   editing = on;
-  grid.classList.toggle('edit', on);
-  $('editBar').style.display = on ? 'block' : 'none';
-  if (on) { $('settings').style.display = 'none'; $('view').classList.remove('full'); }
-  else saveCfg();
+  const av = $('areaVid');
+  $('areaScreen').style.display = on ? 'flex' : 'none';
+  if (on) {
+    $('settings').style.display = 'none';
+    av.srcObject = stream || null; av.play().catch(() => {});
+    setTimeout(layoutGrid, 50); setTimeout(layoutGrid, 500);
+  } else { av.srcObject = null; saveCfg(); }
   touch();
 }
-$('areaBtn').onclick = () => setEditing(true);
+$('areaBtn').onclick = () => { if (!stream) { alert('先に「監視開始」を押してカメラを起動してください'); return; } setEditing(true); };
 $('areaDone').onclick = () => setEditing(false);
 $('areaReset').onclick = () => { cfg.mask = Array(144).fill(1); drawGrid(); };
 $('setBtn').onclick = () => { $('settings').style.display = 'block'; showUsage(); };
@@ -331,7 +341,7 @@ setInterval(() => {
 }, 2000);
 
 // 映像をタップすると全画面（映像だけ）、もう一度タップで元に戻る
-$('view').addEventListener('click', () => { if (!editing) { $('view').classList.toggle('full'); layoutGrid(); } });
+$('view').addEventListener('click', () => { if (!editing) $('view').classList.toggle('full'); });
 
 // ---------- 1秒前から残すための映像バッファ ----------
 const frames = []; // {t, bmp}
