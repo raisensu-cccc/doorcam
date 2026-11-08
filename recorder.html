@@ -15,13 +15,13 @@
   body { padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
   main { max-width:640px; margin:0 auto; padding:12px 16px 40px; }
   h1 { font-size:17px; margin:4px 0 10px; }
-  .view { position:relative; width:100%; aspect-ratio:16/9; background:#000; border-radius:8px; overflow:hidden; touch-action:none; }
-  .view video { width:100%; height:100%; object-fit:cover; display:block; }
-  #grid { position:absolute; inset:0; display:grid; grid-template-columns:repeat(16,1fr); grid-template-rows:repeat(9,1fr); pointer-events:none; }
+  .view { position:relative; width:100%; height:calc(100vh - 175px); height:calc(100dvh - 175px); min-height:280px; background:#000; border-radius:8px; overflow:hidden; touch-action:none; }
+  .view video { width:100%; height:100%; object-fit:contain; display:block; }
+  #grid { position:absolute; display:grid; pointer-events:none; }
   #grid div { border:1px solid rgba(255,255,255,.08); }
   #grid div.off { background:rgba(0,0,0,.65); }
   #grid.edit { pointer-events:auto; }
-  #grid.edit div { border-color:rgba(255,255,255,.25); }
+  #grid.edit div { border-color:rgba(255,255,255,.3); }
   .badge { position:absolute; top:8px; left:8px; color:var(--red); font-weight:700; font-size:14px; text-shadow:0 0 4px #000; display:none; }
   .meter { position:absolute; left:0; bottom:0; height:4px; background:var(--ok); width:0; transition:width .2s; }
   .panel { background:var(--panel); border-radius:8px; padding:12px; margin-top:10px; }
@@ -40,8 +40,9 @@
   #list { position:fixed; inset:0; background:var(--bg); z-index:40; display:none; overflow:auto; padding:calc(env(safe-area-inset-top) + 12px) 16px 40px; }
   .clip { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:10px 0; border-bottom:1px solid #222; }
   .clip .name { font-variant-numeric:tabular-nums; }
-  .view.full { position:fixed; inset:0; z-index:30; width:100vw; height:100vh; height:100dvh; aspect-ratio:auto; border-radius:0; }
-  .view.full video { object-fit:contain; }
+  .view.full { position:fixed; inset:0; z-index:30; width:100vw; height:100vh; height:100dvh; min-height:0; border-radius:0; }
+  #settings { position:fixed; inset:0; background:var(--bg); z-index:40; display:none; overflow:auto; padding:calc(env(safe-area-inset-top) + 12px) 16px 40px; }
+  #editBar { display:none; background:#1e3a5f; border-radius:8px; padding:10px 12px; margin-top:8px; }
   .view.full .meter { display:none; }
   #pv { position:fixed; inset:0; background:#000; z-index:45; display:none; flex-direction:column; }
   #pv .top { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:calc(env(safe-area-inset-top) + 8px) 16px 8px; }
@@ -52,24 +53,32 @@
 </head>
 <body>
 <main>
-  <h1>ドアカメラ録画</h1>
-
   <div class="view" id="view">
     <video id="live" playsinline muted autoplay></video>
     <div id="grid"></div>
     <div class="badge" id="recBadge">● 記録中</div>
     <div class="meter" id="meter"></div>
   </div>
+
+  <div id="editBar">
+    <div>検知しないところを指でなぞって暗くしてください（もう一度なぞると戻ります）</div>
+    <div class="btns"><button id="areaReset">すべて検知の対象にする</button><button class="primary" id="areaDone">完了</button></div>
+  </div>
+
+  <div class="row" style="margin-top:10px"><label>ズーム</label><input type="range" id="zoom" min="1" max="1" step="0.1" value="1" disabled><span id="zoomVal" class="sub">-</span></div>
   <div id="status">「監視開始」を押してください</div>
 
   <div class="btns">
     <button class="primary" id="startBtn">監視開始</button>
     <button id="listBtn">録画一覧</button>
-    <button id="darkBtn" disabled>今すぐ暗くする</button>
+    <button id="setBtn">設定</button>
+    <button id="darkBtn" disabled>暗くする</button>
   </div>
+</main>
 
+<div id="settings">
+  <div class="row"><h1 style="margin:0">設定</h1><button id="closeSet">閉じる</button></div>
   <div class="panel">
-    <div class="row"><label>ズーム</label><input type="range" id="zoom" min="1" max="1" step="0.1" value="1" disabled><span id="zoomVal" class="sub">-</span></div>
     <div class="row"><label>検知感度</label><input type="range" id="sens" min="1" max="100" step="1"><span id="sensVal" class="sub"></span></div>
     <div class="row"><label>検知エリア</label><span class="sub" id="areaInfo"></span><button id="areaBtn">指定する</button></div>
     <div class="row"><label>自動消灯</label>
@@ -80,8 +89,8 @@
       <select id="cap"><option>5</option><option>10</option><option>20</option><option>30</option><option>40</option></select><span class="sub">GB</span></div>
     <div class="sub" id="usage"></div>
   </div>
-  <p class="sub">録音の切り替えは、次に「監視開始」を押したときから反映されます。</p>
-</main>
+  <p class="sub">録音の切り替えは、次に「監視開始」（再起動）を押したときから反映されます。</p>
+</div>
 
 <div id="dark"><div id="darkRec">● 記録中</div></div>
 
@@ -167,27 +176,59 @@ $('dim').onchange = e => { cfg.dim = e.target.value; saveCfg(); touch(); };
 $('audio').onchange = e => { cfg.audio = e.target.value; saveCfg(); };
 $('cap').onchange = async e => { cfg.cap = e.target.value; saveCfg(); await enforceCap(); showUsage(); };
 
-// 検知エリア（16×9マス。暗いマスは検知しない）
+// 検知エリア（144マス。暗いマスは検知しない）
+// 映像が縦長なら 9列×16行、横長なら 16列×9行。マスは映像の実際の表示位置にぴったり重ねる
 const grid = $('grid');
 for (let i = 0; i < 144; i++) { const d = document.createElement('div'); grid.appendChild(d); }
+let cols = 16, rows = 9;
+function layoutGrid() {
+  const lv = $('live'), vw = lv.videoWidth, vh = lv.videoHeight, box = $('view');
+  if (!vw || !vh) return;
+  const portrait = vh > vw;
+  const nc = portrait ? 9 : 16, nr = portrait ? 16 : 9;
+  // 以前の版で保存したマス指定は位置がずれているので、一度だけ全体に戻す
+  if (!cfg.maskOri) cfg.mask = Array(144).fill(1);
+  if (nc !== cols) {
+    cols = nc; rows = nr;
+    // 向きが変わったら、以前のマス指定は合わなくなるので全体に戻す
+    if (cfg.maskOri && cfg.maskOri !== (portrait ? 'p' : 'l')) cfg.mask = Array(144).fill(1);
+  }
+  cfg.maskOri = portrait ? 'p' : 'l';
+  grid.style.gridTemplateColumns = `repeat(${cols},1fr)`;
+  grid.style.gridTemplateRows = `repeat(${rows},1fr)`;
+  const bw = box.clientWidth, bh = box.clientHeight, s = Math.min(bw / vw, bh / vh);
+  const w = vw * s, h = vh * s;
+  Object.assign(grid.style, { width: w + 'px', height: h + 'px', left: (bw - w) / 2 + 'px', top: (bh - h) / 2 + 'px' });
+  drawGrid();
+}
+$('live').addEventListener('loadedmetadata', layoutGrid);
+$('live').addEventListener('resize', layoutGrid);
+window.addEventListener('resize', () => setTimeout(layoutGrid, 100));
+setInterval(layoutGrid, 3000);
 function drawGrid() {
   [...grid.children].forEach((d, i) => d.classList.toggle('off', !cfg.mask[i]));
   const on = cfg.mask.filter(Boolean).length;
-  $('areaInfo').textContent = on === 144 ? '全体' : `${on}/144マス`;
+  $('areaInfo').textContent = on === 144 ? '映像全体' : `${on}/144マス`;
 }
 drawGrid();
 let editing = false, paintVal = 1;
-$('areaBtn').onclick = () => {
-  editing = !editing;
-  grid.classList.toggle('edit', editing);
-  $('areaBtn').textContent = editing ? '完了' : '指定する';
-  if (!editing) saveCfg();
-  setStatus(editing ? '映像をなぞると、検知しないマス（暗いマス）を切り替えられます' : '');
-};
+function setEditing(on) {
+  editing = on;
+  grid.classList.toggle('edit', on);
+  $('editBar').style.display = on ? 'block' : 'none';
+  if (on) { $('settings').style.display = 'none'; $('view').classList.remove('full'); }
+  else saveCfg();
+  touch();
+}
+$('areaBtn').onclick = () => setEditing(true);
+$('areaDone').onclick = () => setEditing(false);
+$('areaReset').onclick = () => { cfg.mask = Array(144).fill(1); drawGrid(); };
+$('setBtn').onclick = () => { $('settings').style.display = 'block'; showUsage(); };
+$('closeSet').onclick = () => { $('settings').style.display = 'none'; touch(); };
 function cellAt(ev) {
   const r = grid.getBoundingClientRect();
-  const x = Math.floor((ev.clientX - r.left) / r.width * 16), y = Math.floor((ev.clientY - r.top) / r.height * 9);
-  return (x < 0 || x > 15 || y < 0 || y > 8) ? -1 : y * 16 + x;
+  const x = Math.floor((ev.clientX - r.left) / r.width * cols), y = Math.floor((ev.clientY - r.top) / r.height * rows);
+  return (x < 0 || x >= cols || y < 0 || y >= rows) ? -1 : y * cols + x;
 }
 grid.addEventListener('pointerdown', ev => {
   if (!editing) return;
@@ -290,7 +331,7 @@ setInterval(() => {
 }, 2000);
 
 // 映像をタップすると全画面（映像だけ）、もう一度タップで元に戻る
-$('view').addEventListener('click', () => { if (!editing) $('view').classList.toggle('full'); });
+$('view').addEventListener('click', () => { if (!editing) { $('view').classList.toggle('full'); layoutGrid(); } });
 
 // ---------- 1秒前から残すための映像バッファ ----------
 const frames = []; // {t, bmp}
@@ -309,14 +350,17 @@ function startCapture() {
 }
 
 // ---------- 動体検知 ----------
-const dc = document.createElement('canvas'); dc.width = 96; dc.height = 54;
+const dc = document.createElement('canvas');
 const dctx = dc.getContext('2d', { willReadFrequently: true });
 let prevGray = null, prevMean = 0, hits = 0;
 function detectTick() {
   if (!running || !live.videoWidth) return;
-  dctx.drawImage(live, 0, 0, 96, 54);
-  const px = dctx.getImageData(0, 0, 96, 54).data;
-  const g = new Uint8Array(96 * 54);
+  // 映像全体を縮小して調べる（縦長なら54×96、横長なら96×54。1マス＝6×6ピクセル）
+  const W = cols * 6, H = rows * 6;
+  if (dc.width !== W || dc.height !== H) { dc.width = W; dc.height = H; prevGray = null; }
+  dctx.drawImage(live, 0, 0, W, H);
+  const px = dctx.getImageData(0, 0, W, H).data;
+  const g = new Uint8Array(W * H);
   let sum = 0;
   for (let i = 0, j = 0; i < px.length; i += 4, j++) { g[j] = (px[i] * 3 + px[i + 1] * 6 + px[i + 2]) / 10; sum += g[j]; }
   const mean = sum / g.length;
@@ -325,10 +369,10 @@ function detectTick() {
     // 照明が一斉に変わったとき（廊下の電気など）は無視
     if (Math.abs(mean - prevMean) < 18) {
       let changed = 0, area = 0;
-      for (let y = 0; y < 54; y++) for (let x = 0; x < 96; x++) {
-        if (!cfg.mask[Math.floor(y / 6) * 16 + Math.floor(x / 6)]) continue;
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        if (!cfg.mask[Math.floor(y / 6) * cols + Math.floor(x / 6)]) continue;
         area++;
-        const k = y * 96 + x;
+        const k = y * W + x;
         if (Math.abs(g[k] - prevGray[k]) > 25) changed++;
       }
       ratio = area ? changed / area : 0;
@@ -460,7 +504,7 @@ $('dark').addEventListener('pointerdown', e => { e.stopPropagation(); e.preventD
 $('darkBtn').onclick = () => setDark(true);
 setInterval(() => {
   const min = Number(cfg.dim);
-  if (running && min > 0 && !editing && $('list').style.display !== 'block' && $('pv').style.display !== 'flex' && Date.now() - lastTouch > min * 60000) setDark(true);
+  if (running && min > 0 && !editing && $('list').style.display !== 'block' && $('pv').style.display !== 'flex' && $('settings').style.display !== 'block' && Date.now() - lastTouch > min * 60000) setDark(true);
 }, 2000);
 
 // ---------- 録画一覧 ----------
