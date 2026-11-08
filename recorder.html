@@ -43,6 +43,8 @@
   .view.full { position:fixed; inset:0; z-index:30; width:100vw; height:100vh; height:100dvh; min-height:0; border-radius:0; }
   #settings { position:fixed; inset:0; background:var(--bg); z-index:40; display:none; overflow:auto; padding:calc(env(safe-area-inset-top) + 12px) 16px 40px; }
   #areaScreen { position:fixed; inset:0; background:var(--bg); z-index:42; display:none; flex-direction:column; padding:calc(env(safe-area-inset-top) + 10px) 16px calc(env(safe-area-inset-bottom) + 12px); }
+  #qrScreen { position:fixed; inset:0; background:#fff; color:#111; z-index:60; display:none; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:20px; text-align:center; }
+  #qrScreen button { background:#333; }
   #areaView { flex:1; height:auto; min-height:0; margin:8px 0; }
   .view.full .meter { display:none; }
   #pv { position:fixed; inset:0; background:#000; z-index:45; display:none; flex-direction:column; }
@@ -51,6 +53,7 @@
   #pv .bar { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:10px 16px calc(env(safe-area-inset-bottom) + 14px); }
   #pv .bar button { min-width:96px; }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body>
 <main>
@@ -81,6 +84,13 @@
   <button id="areaReset">すべて検知の対象にする</button>
 </div>
 
+<div id="qrScreen">
+  <div style="font-weight:700;font-size:17px">視聴アプリでこのQRを読み取ってください</div>
+  <div id="qrBox"></div>
+  <div style="font-size:13px;color:#555">写真に撮ったり、人に送ったりしないでください。<br><span id="qrLeft"></span>秒後に自動で消えます。</div>
+  <button id="qrClose">閉じる</button>
+</div>
+
 <div id="settings">
   <div class="row"><h1 style="margin:0">設定</h1><button id="closeSet">閉じる</button></div>
   <div class="panel">
@@ -93,6 +103,13 @@
     <div class="row"><label>本体の保存上限</label>
       <select id="cap"><option>5</option><option>10</option><option>20</option><option>30</option><option>40</option></select><span class="sub">GB</span></div>
     <div class="sub" id="usage"></div>
+  </div>
+  <div class="panel">
+    <div class="row"><label>クラウド保存</label><span class="sub" id="cloudInfo">未接続</span></div>
+    <div class="btns">
+      <button class="primary" id="cloudBtn">クラウドに接続</button>
+      <button id="qrBtn" disabled>視聴する端末を追加（QR）</button>
+    </div>
   </div>
   <p class="sub">録音の切り替えは、次に「監視開始」（再起動）を押したときから反映されます。</p>
   <p class="sub" id="verInfo"></p>
@@ -459,6 +476,7 @@ function onMotion(m) {
       drawDelayed();
       rec = newRecorder(true);
       detectCount++;
+      notify();
       showRec(true);
       return;
     }
@@ -485,6 +503,7 @@ async function saveRec(r) {
   const dur = Math.round(((r.endLive || performance.now()) - r.startLive) / 1000);
   try {
     await putClip({ name, size: blob.size, dur, type: blob.type, cont: !r.first, uploaded: false }, blob);
+    kickUpload();
     savedCount++; lastSaved = name.slice(9, 11) + ':' + name.slice(11, 13) + ':' + name.slice(13, 15);
     await enforceCap();
   } catch (e) { lastError = '保存できませんでした：' + e.message; }
@@ -585,7 +604,7 @@ $('pv').addEventListener('touchend', e => {
 
 // ---------- 版の確認（古い画面が使い回されないように） ----------
 // iPhoneは同じページを最大10分ほど使い回すため、起動時に最新版があれば読み込み直す
-const APP_VER = 5;
+const APP_VER = 6;
 $('verInfo').textContent = 'アプリの版：' + APP_VER;
 (async () => {
   try {
@@ -595,12 +614,143 @@ $('verInfo').textContent = 'アプリの版：' + APP_VER;
   } catch (e) {}
 })();
 
+// ---------- クラウド（受付窓口）への保存 ----------
+// cloud = { u: 窓口のURL, s: 合言葉, k: 暗号鍵, t: 通知の宛先 }
+let cloud = null;
+try { cloud = JSON.parse(localStorage.getItem('doorcam-cloud') || 'null'); } catch (e) {}
+const b64 = buf => { let s = ''; const a = new Uint8Array(buf); for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000)); return btoa(s); };
+const rnd = n => b64(crypto.getRandomValues(new Uint8Array(n))).replace(/[+/=]/g, '').slice(0, n);
+async function api(body) {
+  const r = await fetch(cloud.u, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ s: cloud.s }, body)) });
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.err || '失敗');
+  return j;
+}
+let cloudMsg = '';
+function showCloud() {
+  $('cloudInfo').textContent = cloud ? ('接続済み' + (cloudMsg ? '・' + cloudMsg : '')) : '未接続';
+  $('cloudBtn').style.display = cloud ? 'none' : '';
+  $('qrBtn').disabled = !cloud;
+}
+showCloud();
+
+$('cloudBtn').onclick = async () => {
+  try {
+    const conf = await (await fetch('config.json?' + Date.now(), { cache: 'no-store' })).json();
+    if (!conf.url) throw new Error('窓口のURLがまだ設定されていません');
+    const key = await crypto.subtle.exportKey('raw', await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']));
+    const c = { u: conf.url, s: rnd(40), k: b64(key), t: 'doorcam-' + rnd(24) };
+    const r = await fetch(c.u, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ a: 'claim', s: c.s }) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.err === 'claimed' ? 'すでに別の端末が接続しています' : j.err);
+    cloud = c;
+    localStorage.setItem('doorcam-cloud', JSON.stringify(cloud));
+    cloudMsg = ''; showCloud(); kickUpload();
+    alert('クラウドに接続しました');
+  } catch (e) { alert('接続できませんでした：' + e.message); }
+};
+
+// 暗号化（AES-GCM）：先頭12バイトが乱数、残りが暗号文
+let aesKey = null;
+async function getKey() {
+  if (!aesKey) aesKey = await crypto.subtle.importKey('raw', Uint8Array.from(atob(cloud.k), c => c.charCodeAt(0)), 'AES-GCM', false, ['encrypt']);
+  return aesKey;
+}
+async function encrypt(buf) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await getKey(), buf));
+  const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12);
+  return out;
+}
+
+// アップロード：まだ送っていない動画を古い順に、3MBずつ分けて送る。失敗したら後でやり直す
+const PART = 3 * 1024 * 1024;
+let uploading = false, upTimer = null;
+function kickUpload() { clearTimeout(upTimer); upTimer = setTimeout(uploadLoop, 1000); }
+async function uploadLoop() {
+  if (uploading || !cloud || !db) return;
+  uploading = true;
+  let wait = 30000;
+  try {
+    const pending = (await allMeta()).filter(m => !m.uploaded).reverse();
+    for (const m of pending) {
+      const r = await reqP(tx('blobs').objectStore('blobs').get(m.name));
+      if (!r) continue;
+      const raw = (r instanceof Blob) ? await r.arrayBuffer() : r.buf;
+      const enc = await encrypt(raw);
+      const parts = Math.max(1, Math.ceil(enc.length / PART));
+      for (let i = parts - 1; i >= 0; i--) { // 最後に000を送る（000が届いた時点で全部そろっている）
+        const body = { a: 'put', n: m.name + '.' + String(i).padStart(3, '0'), d: b64(enc.subarray(i * PART, (i + 1) * PART)) };
+        if (i === 0) body.m = { parts, dur: m.dur, cont: !!m.cont, type: m.type || 'video/mp4', size: m.size };
+        await api(body);
+      }
+      m.uploaded = true;
+      const t = tx('meta', 'readwrite'); t.objectStore('meta').put(m);
+      await new Promise(res => { t.oncomplete = res; });
+      cloudMsg = '最終送信 ' + m.name.slice(9, 11) + ':' + m.name.slice(11, 13);
+      showCloud();
+    }
+    wait = 60000;
+  } catch (e) {
+    cloudMsg = '送信待ち（' + e.message + '）';
+    showCloud();
+  } finally {
+    uploading = false;
+    clearTimeout(upTimer); upTimer = setTimeout(uploadLoop, wait);
+  }
+}
+
+// 検知したらスマホに通知（ntfy）。5分以内の検知はまとめる
+let lastNotify = 0;
+function notify() {
+  if (!cloud || Date.now() - lastNotify < 5 * 60000) return;
+  lastNotify = Date.now();
+  const d = new Date();
+  fetch('https://ntfy.sh/' + cloud.t, { method: 'POST', body: `ドアカメラ：動きを検知しました ${pad(d.getHours())}:${pad(d.getMinutes())}` }).catch(() => {});
+}
+
+// 視聴アプリから変えた設定を、2分ごとに取りに行って反映する
+let cfgVer = 0;
+async function pullCfg() {
+  if (!cloud) return;
+  try {
+    const c = (await api({ a: 'cfg' })).cfg || {};
+    if (!c.ver || c.ver === cfgVer) return;
+    cfgVer = c.ver;
+    if (c.sens) { cfg.sens = Number(c.sens); $('sens').value = cfg.sens; $('sensVal').textContent = cfg.sens; }
+    if (c.dim != null) { cfg.dim = String(c.dim); $('dim').value = cfg.dim; }
+    if (c.cap) { cfg.cap = String(c.cap); $('cap').value = cfg.cap; enforceCap(); }
+    if (c.zoom) { cfg.zoom = Number(c.zoom); $('zoom').value = cfg.zoom; if (vtrack) applyZoom(cfg.zoom); }
+    if (Array.isArray(c.mask) && c.mask.length === 144) { cfg.mask = c.mask; drawGrid(); }
+    if (c.audio != null && String(c.audio) !== cfg.audio) { cfg.audio = String(c.audio); $('audio').value = cfg.audio; saveCfg(); if (wanted && !rec) start(); }
+    saveCfg();
+    await api({ a: 'ack', ver: c.ver });
+  } catch (e) {}
+}
+setInterval(pullCfg, 120000);
+setTimeout(pullCfg, 5000);
+
+// QRの表示（60秒で自動的に消える）
+let qrTimer = null;
+$('qrBtn').onclick = () => {
+  if (!cloud || typeof QRCode === 'undefined') { alert('QRを表示できません（通信を確認してください）'); return; }
+  const box = $('qrBox'); box.innerHTML = '';
+  new QRCode(box, { text: JSON.stringify({ v: 1, u: cloud.u, s: cloud.s, k: cloud.k, t: cloud.t }), width: 280, height: 280, correctLevel: QRCode.CorrectLevel.M });
+  $('qrScreen').style.display = 'flex';
+  let left = 60; $('qrLeft').textContent = left;
+  clearInterval(qrTimer);
+  qrTimer = setInterval(() => { left--; $('qrLeft').textContent = left; if (left <= 0) closeQr(); }, 1000);
+};
+function closeQr() { clearInterval(qrTimer); $('qrBox').innerHTML = ''; $('qrScreen').style.display = 'none'; touch(); }
+$('qrClose').onclick = closeQr;
+
 // ---------- 起動 ----------
 (async () => {
   try {
     await openDB();
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
     showUsage();
+    kickUpload();
   } catch (e) { setStatus('保存領域を開けませんでした：' + e.message); }
 })();
 </script>
