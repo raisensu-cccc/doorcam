@@ -476,7 +476,7 @@ function onMotion(m) {
       drawDelayed();
       rec = newRecorder(true);
       detectCount++;
-      notify();
+      notify(rec.name);
       showRec(true);
       return;
     }
@@ -604,7 +604,7 @@ $('pv').addEventListener('touchend', e => {
 
 // ---------- 版の確認（古い画面が使い回されないように） ----------
 // iPhoneは同じページを最大10分ほど使い回すため、起動時に最新版があれば読み込み直す
-const APP_VER = 6;
+const APP_VER = 7;
 $('verInfo').textContent = 'アプリの版：' + APP_VER;
 (async () => {
   try {
@@ -702,11 +702,14 @@ async function uploadLoop() {
 
 // 検知したらスマホに通知（ntfy）。5分以内の検知はまとめる
 let lastNotify = 0;
-function notify() {
+// 通知をタップすると視聴アプリが開き、その時刻の動画を再生する
+const VIEWER_URL = new URL('viewer.html', location.href).href;
+function notify(name) {
   if (!cloud || Date.now() - lastNotify < 5 * 60000) return;
   lastNotify = Date.now();
   const d = new Date();
-  fetch('https://ntfy.sh/' + cloud.t, { method: 'POST', body: `ドアカメラ：動きを検知しました ${pad(d.getHours())}:${pad(d.getMinutes())}` }).catch(() => {});
+  const q = '?title=' + encodeURIComponent('ドアカメラ') + '&click=' + encodeURIComponent(VIEWER_URL + '#t=' + name) + '&tags=door';
+  fetch('https://ntfy.sh/' + cloud.t + q, { method: 'POST', body: `動きを検知しました（${pad(d.getHours())}:${pad(d.getMinutes())}）。タップすると動画を開きます` }).catch(() => {});
 }
 
 // 視聴アプリから変えた設定を、2分ごとに取りに行って反映する

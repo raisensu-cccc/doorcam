@@ -170,7 +170,7 @@
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-const APP_VER = 1;
+const APP_VER = 2;
 $('ver').textContent = '視聴アプリの版：' + APP_VER;
 function toast(t, ms = 2200) { const e = $('toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => e.style.display = 'none', ms); }
 const pad = n => String(n).padStart(2, '0');
@@ -537,6 +537,29 @@ $('forget').onclick = () => {
   } catch (e) {}
 })();
 
+// ---------- 通知から開いたとき：その時刻の動画を探して再生する ----------
+// 通知は検知した瞬間に届くが、動画のアップロードは録画が終わってからなので、届くまで待つ
+let target = null, targetTries = 0;
+function readTarget() {
+  const m = location.hash.match(/t=(\d{8}_\d{6})/);
+  if (m) { target = m[1]; targetTries = 0; history.replaceState(null, '', location.pathname); }
+}
+async function openTarget() {
+  if (!target || !cloud) return;
+  // 指定時刻以降で一番早い動画（一覧は新しい順なので後ろから探す）
+  let idx = -1;
+  for (let i = list.length - 1; i >= 0; i--) if (list[i].name >= target) { idx = i; break; }
+  if (idx >= 0) {
+    day = dayOf(list[idx].name); loadList.render();
+    target = null; toast('検知した動画を再生します'); playAt(idx); return;
+  }
+  if (++targetTries > 36) { toast('動画がまだ届いていません。少し待ってから「更新」を押してください', 4000); target = null; return; }
+  toast('録画をアップロード中です。届きしだい再生します…', 5200);
+  setTimeout(async () => { await loadList(); openTarget(); }, 5000);
+}
+window.addEventListener('hashchange', () => { readTarget(); if (target) loadList().then(openTarget); });
+readTarget();
+
 // ---------- 起動 ----------
 async function boot() {
   setSpeed(speed);
@@ -546,7 +569,7 @@ async function boot() {
   $('reloadBtn').style.display = cloud ? '' : 'none';
   if (!cloud) { $('viewers').textContent = '未登録'; return; }
   await openThumbDB();
-  ping(); loadList();
+  ping(); await loadList(); openTarget();
 }
 boot();
 // 画面に戻ってきたら一覧を新しくする
