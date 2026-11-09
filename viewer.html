@@ -159,7 +159,7 @@
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-const APP_VER = 3;
+const APP_VER = 4;
 $('ver').textContent = '視聴アプリの版：' + APP_VER;
 function toast(t, ms = 2200) { const e = $('toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => e.style.display = 'none', ms); }
 const pad = n => String(n).padStart(2, '0');
@@ -181,8 +181,9 @@ async function api(body) {
 let scanStream = null, scanning = false;
 const qrCanvas = document.createElement('canvas'), qrCtx = qrCanvas.getContext('2d', { willReadFrequently: true });
 $('scanBtn').onclick = startScan;
-$('scanClose').onclick = stopScan;
+$('scanClose').onclick = closeScan;
 async function startScan() {
+  pushLayer('scan');
   $('scan').style.display = 'block';
   try {
     scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
@@ -218,7 +219,7 @@ async function acceptCode(text) {
   let c;
   try { c = JSON.parse(text); } catch (e) { return false; }
   if (!c || !c.u || !c.s || !c.k || !c.t) return false;
-  stopScan();
+  closeScan();
   cloud = { u: c.u, s: c.s, k: c.k, t: c.t };
   try { await api({ a: 'ping', id: myId }); }
   catch (e) { cloud = null; alert('接続できませんでした（' + e.message + '）。QRを表示し直して、もう一度読み取ってください。'); return true; }
@@ -410,6 +411,7 @@ player.preservesPitch = true; player.webkitPreservesPitch = true; // 速くし�
 async function playAt(i) {
   if (i < 0 || i >= list.length) return;
   cur = i; const x = list[i];
+  if ($('pv').style.display !== 'flex') pushLayer('pv');
   $('pv').style.display = 'flex';
   $('pvName').textContent = `${dayLabel(dayOf(x.name))} ${hms(x.name)}`;
   $('pvInfo').textContent = `${list.length - i} / ${list.length}本目・${x.meta.cont ? '前の続き・' : ''}${x.meta.dur}秒`;
@@ -432,7 +434,8 @@ async function playAt(i) {
 }
 $('pvPrev').onclick = () => playAt(cur - 1);
 $('pvNext').onclick = () => playAt(cur + 1);
-$('pvClose').onclick = () => { player.pause(); $('pv').style.display = 'none'; };
+function closePlayer() { player.pause(); $('pv').style.display = 'none'; }
+$('pvClose').onclick = () => closeLayer('pv', closePlayer);
 player.addEventListener('ended', () => { if ($('pvAuto').checked && cur > 0) playAt(cur - 1); });
 player.addEventListener('ratechange', () => { if (Math.abs(player.playbackRate - speed) > 0.01 && player.playbackRate !== 0) player.playbackRate = speed; });
 const fmt = t => isFinite(t) ? `${Math.floor(t / 60)}:${pad(Math.floor(t % 60))}` : '0:00';
@@ -502,6 +505,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // ---------- 録画用iPhoneの設定 ----------
 let sentVer = 0, remote = {};
 $('setBtn').onclick = async () => {
+  if ($('settings').style.display !== 'block') pushLayer('settings');
   $('settings').style.display = 'block';
   if (!cloud) return;
   try {
@@ -516,7 +520,7 @@ $('setBtn').onclick = async () => {
     await ping();
   } catch (e) { $('cfgState').textContent = '読み込めませんでした：' + e.message; }
 };
-$('setClose').onclick = () => { $('settings').style.display = 'none'; };
+$('setClose').onclick = () => closeLayer('settings', () => { $('settings').style.display = 'none'; });
 $('rSens').oninput = e => $('rSensVal').textContent = e.target.value;
 function showCfgState() {
   if (!sentVer) { $('cfgState').textContent = ''; return; }
@@ -555,7 +559,7 @@ $('forget').onclick = () => {
 let target = null, targetTries = 0;
 function readTarget() {
   const m = location.hash.match(/t=(\d{8}_\d{6})/);
-  if (m) { target = m[1]; targetTries = 0; history.replaceState(null, '', location.pathname); }
+  if (m) { target = m[1]; targetTries = 0; history.replaceState(history.state, '', location.pathname); }
 }
 async function openTarget() {
   if (!target || !cloud) return;
@@ -572,6 +576,29 @@ async function openTarget() {
 }
 window.addEventListener('hashchange', () => { readTarget(); if (target) loadList().then(openTarget); });
 readTarget();
+
+// ---------- Galaxyの戻るボタン ----------
+// 画面（再生・設定・QR読み取り）を開くたびに履歴を1つ積み、戻るボタンではその画面だけを閉じる。
+// 一覧で戻るボタンを押しても、アプリは閉じない。
+function pushLayer(v) { history.pushState({ v }, ''); }
+function closeLayer(v, fn) { if (history.state && history.state.v === v) history.back(); else fn(); }
+function closeScan() { closeLayer('scan', stopScan); }
+function ensureGuard() { if (!history.state || history.state.v === 'root') history.pushState({ v: 'home' }, ''); }
+history.replaceState({ v: 'root' }, '');
+ensureGuard();
+// 画面を触ったときにも、念のため「閉じない」ための履歴を補う
+document.addEventListener('pointerdown', ensureGuard, true);
+window.addEventListener('popstate', () => {
+  let closed = true;
+  if ($('pv').style.display === 'flex') closePlayer();
+  else if ($('settings').style.display === 'block') $('settings').style.display = 'none';
+  else if ($('scan').style.display === 'block') stopScan();
+  else closed = false;
+  if (!history.state || history.state.v === 'root') {
+    history.pushState({ v: 'home' }, '');
+    if (!closed) toast('アプリを閉じるときは、ホームボタンかアプリの切り替え画面から閉じてください', 3000);
+  }
+});
 
 // ---------- 起動 ----------
 async function boot() {
