@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="ドアカメラ">
+<meta name="theme-color" content="#0b0b0b">
+<title>ドアカメラ</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<style>
+  :root { --bg:#0b0b0b; --panel:#1a1a1a; --line:#262626; --fg:#eee; --sub:#9a9a9a; --accent:#3b82f6; --red:#ef4444; --ok:#22c55e; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; background:var(--bg); color:var(--fg); font-family:-apple-system, "Segoe UI", sans-serif; font-size:15px; }
+  body { padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  main { max-width:720px; margin:0 auto; padding:12px 16px 60px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  h1 { font-size:18px; margin:4px 0; }
+  h2 { font-size:15px; margin:18px 0 8px; }
+  button, select { font-size:15px; padding:9px 13px; border-radius:8px; border:0; color:#fff; background:#333; }
+  button.primary { background:var(--accent); }
+  button.warn { background:#7f1d1d; }
+  button:disabled { opacity:.35; }
+  .sub { color:var(--sub); font-size:13px; }
+  .panel { background:var(--panel); border-radius:10px; padding:12px; margin-top:10px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:8px 0; }
+  .row label { flex:none; }
+  input[type=range] { flex:1; }
+  .badge { font-size:12px; background:#1f2937; color:#cbd5e1; border-radius:999px; padding:4px 10px; white-space:nowrap; }
+  .badge.live { background:#14532d; color:#bbf7d0; }
+  .days { display:flex; gap:8px; overflow-x:auto; padding:4px 0 8px; }
+  .days button { flex:none; padding:7px 12px; font-size:14px; }
+  .days button.on { background:var(--accent); }
+  .hours { display:flex; align-items:flex-end; gap:2px; height:56px; margin-top:4px; }
+  .hours div { flex:1; background:#334155; border-radius:2px 2px 0 0; min-height:2px; }
+  .hours div.has { background:var(--accent); }
+  .hlab { display:flex; justify-content:space-between; font-size:11px; color:var(--sub); margin-top:2px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:10px; margin-top:10px; }
+  .card { background:var(--panel); border-radius:8px; overflow:hidden; cursor:pointer; }
+  .thumb { width:100%; aspect-ratio:16/9; background:#000 center/cover no-repeat; display:flex; align-items:center; justify-content:center; color:#555; font-size:12px; }
+  .card .meta { padding:6px 8px; display:flex; justify-content:space-between; gap:6px; font-size:13px; font-variant-numeric:tabular-nums; }
+  .tag { font-size:11px; color:#fbbf24; }
+  .empty { text-align:center; color:var(--sub); padding:40px 0; }
+  .screen { position:fixed; inset:0; background:var(--bg); z-index:40; display:none; overflow:auto; padding:calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 30px); }
+  #scan video { width:100%; max-height:60vh; background:#000; border-radius:8px; object-fit:cover; }
+  textarea { width:100%; min-height:80px; background:#111; color:#eee; border:1px solid #333; border-radius:8px; padding:8px; font-size:13px; }
+  /* 再生画面 */
+  #pv { position:fixed; inset:0; background:#000; z-index:45; display:none; flex-direction:column; }
+  #pv .top { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:calc(env(safe-area-inset-top) + 8px) 14px 8px; }
+  #stage { flex:1; min-height:0; position:relative; overflow:hidden; touch-action:none; }
+  #player { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; transform-origin:0 0; }
+  #loading { position:absolute; inset:0; display:none; align-items:center; justify-content:center; color:#ddd; font-size:14px; background:rgba(0,0,0,.4); }
+  #pv .ctrl { padding:8px 12px calc(env(safe-area-inset-bottom) + 12px); display:flex; flex-direction:column; gap:8px; }
+  #pv .line { display:flex; justify-content:space-between; align-items:center; gap:6px; }
+  #pv .line button { flex:1; padding:10px 6px; }
+  .speeds { display:flex; gap:4px; }
+  .speeds button { flex:1; padding:7px 0; font-size:13px; }
+  .speeds button.on { background:var(--accent); }
+  #seek { width:100%; }
+  .time { font-size:12px; color:var(--sub); font-variant-numeric:tabular-nums; }
+  .toast { position:fixed; left:50%; bottom:calc(env(safe-area-inset-bottom) + 24px); transform:translateX(-50%); background:#333; color:#fff; padding:8px 14px; border-radius:8px; font-size:13px; z-index:70; display:none; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>ドアカメラ</h1>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="badge" id="viewers">視聴中 -台</span>
+      <button id="reloadBtn">更新</button>
+      <button id="setBtn">設定</button>
+    </div>
+  </header>
+
+  <div id="setup" style="display:none">
+    <div class="panel">
+      <div style="font-weight:700;margin-bottom:6px">はじめに：録画用iPhoneのQRを読み取ってください</div>
+      <div class="sub">録画アプリの「設定」→「視聴する端末を追加（QR）」で表示されるQRコードを読み取ります。</div>
+      <div class="btns" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="primary" id="scanBtn">QRを読み取る</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="home" style="display:none">
+    <div class="sub" id="listInfo" style="margin-top:6px"></div>
+    <div class="days" id="days"></div>
+    <div class="panel">
+      <div class="row" style="margin:0"><span class="sub">時間帯ごとの検知回数</span><span class="sub" id="dayCount"></span></div>
+      <div class="hours" id="hours"></div>
+      <div class="hlab"><span>0時</span><span>6時</span><span>12時</span><span>18時</span><span>24時</span></div>
+    </div>
+    <div class="grid" id="grid"></div>
+  </div>
+</main>
+
+<!-- QR読み取り -->
+<div class="screen" id="scan">
+  <div class="row"><h1 style="margin:0">QRを読み取る</h1><button id="scanClose">閉じる</button></div>
+  <video id="scanVid" playsinline muted autoplay></video>
+  <div class="sub" id="scanMsg" style="margin-top:8px">録画用iPhoneに表示したQRコードにカメラを向けてください</div>
+</div>
+
+<!-- 設定 -->
+<div class="screen" id="settings">
+  <div class="row"><h1 style="margin:0">設定</h1><button id="setClose">閉じる</button></div>
+
+  <h2>録画用iPhoneの設定</h2>
+  <div class="panel">
+    <div class="row"><label>検知感度</label><input type="range" id="rSens" min="1" max="100" step="1"><span class="sub" id="rSensVal"></span></div>
+    <div class="row"><label>自動消灯</label><select id="rDim"><option value="0">なし</option><option value="1">1分</option><option value="5">5分</option></select></div>
+    <div class="row"><label>録音</label><select id="rAudio"><option value="1">オン</option><option value="0">オフ</option></select></div>
+    <div class="row"><label>本体の保存上限</label><select id="rCap"><option>5</option><option>10</option><option>20</option><option>30</option><option>40</option></select><span class="sub">GB</span></div>
+    <div class="row"><label>ドライブの保存期間</label><select id="rRetain"><option value="3">3日</option><option value="5">5日</option><option value="7">7日</option><option value="14">14日</option><option value="30">30日</option></select></div>
+    <div class="row" style="margin-top:12px"><span class="sub" id="cfgState"></span><button class="primary" id="cfgSend">録画用iPhoneに送る</button></div>
+    <div class="sub">録画用iPhoneが2分ごとに設定を取りに来るので、反映まで最大で数分かかります。</div>
+  </div>
+
+  <h2>通知</h2>
+  <div class="panel">
+    <div class="sub">ntfyアプリで次の宛先を登録すると、検知したときに通知が届きます（5分以内の検知はまとめて1回）。</div>
+    <div class="row"><code id="topic" style="font-size:13px;word-break:break-all"></code></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="primary" id="ntfyOpen">ntfyで開く</button>
+      <button id="ntfyCopy">宛先をコピー</button>
+    </div>
+    <div class="sub" style="margin-top:8px">うまく開かない場合：ntfyアプリの「＋」→「トピック名」に上の宛先を貼り付けて「購読」してください。</div>
+  </div>
+
+  <h2>この端末</h2>
+  <div class="panel">
+    <div class="sub" id="ver"></div>
+    <div style="margin-top:8px"><button class="warn" id="forget">この端末の登録を解除する</button></div>
+    <div class="sub" style="margin-top:6px">解除すると、もう一度QRを読み取るまで動画を見られなくなります。</div>
+  </div>
+</div>
+
+<!-- 再生画面 -->
+<div id="pv">
+  <div class="top">
+    <div><div id="pvName" style="font-variant-numeric:tabular-nums"></div><div class="sub" id="pvInfo"></div></div>
+    <button id="pvClose">閉じる</button>
+  </div>
+  <div id="stage">
+    <video id="player" playsinline></video>
+    <div id="loading">読み込み中…</div>
+  </div>
+  <div class="ctrl">
+    <input type="range" id="seek" min="0" max="1000" value="0">
+    <div class="line"><span class="time" id="tCur">0:00</span><span class="sub">2本指で拡大・ダブルタップで元に戻す</span><span class="time" id="tDur">0:00</span></div>
+    <div class="speeds" id="speeds"></div>
+    <div class="line">
+      <button id="back10">10秒戻る</button>
+      <button id="stepBtn">コマ送り</button>
+      <button class="primary" id="playBtn">一時停止</button>
+      <button id="muteBtn">音あり</button>
+    </div>
+    <div class="line">
+      <button id="pvPrev">◀ 前へ</button>
+      <label class="sub" style="flex:none;padding:0 6px"><input type="checkbox" id="pvAuto" checked> 続けて再生</label>
+      <button id="pvNext">次へ ▶</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const APP_VER = 1;
+$('ver').textContent = '視聴アプリの版：' + APP_VER;
+function toast(t, ms = 2200) { const e = $('toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => e.style.display = 'none', ms); }
+const pad = n => String(n).padStart(2, '0');
+
+// ---------- 接続情報（QRの中身） ----------
+let cloud = null;
+try { cloud = JSON.parse(localStorage.getItem('doorcam-view') || 'null'); } catch (e) {}
+let myId = null;
+try { myId = localStorage.getItem('doorcam-id'); if (!myId) { myId = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('doorcam-id', myId); } } catch (e) { myId = 'x' + Date.now(); }
+
+async function api(body) {
+  const r = await fetch(cloud.u, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ s: cloud.s }, body)) });
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.err || '失敗');
+  return j;
+}
+
+// ---------- QR読み取り ----------
+let scanStream = null, scanning = false;
+const qrCanvas = document.createElement('canvas'), qrCtx = qrCanvas.getContext('2d', { willReadFrequently: true });
+$('scanBtn').onclick = startScan;
+$('scanClose').onclick = stopScan;
+async function startScan() {
+  $('scan').style.display = 'block';
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    $('scanVid').srcObject = scanStream; await $('scanVid').play();
+    scanning = true; scanLoop();
+  } catch (e) { $('scanMsg').textContent = 'カメラを開けませんでした：' + e.message; }
+}
+function stopScan() {
+  scanning = false;
+  if (scanStream) scanStream.getTracks().forEach(t => t.stop());
+  scanStream = null; $('scan').style.display = 'none';
+}
+let detector = null;
+try { if ('BarcodeDetector' in window) detector = new BarcodeDetector({ formats: ['qr_code'] }); } catch (e) {}
+async function scanLoop() {
+  if (!scanning) return;
+  const v = $('scanVid');
+  if (v.videoWidth) {
+    let text = null;
+    try {
+      if (detector) { const r = await detector.detect(v); if (r.length) text = r[0].rawValue; }
+      else if (window.jsQR) {
+        const w = 480, h = Math.round(v.videoHeight / v.videoWidth * w);
+        qrCanvas.width = w; qrCanvas.height = h; qrCtx.drawImage(v, 0, 0, w, h);
+        const c = jsQR(qrCtx.getImageData(0, 0, w, h).data, w, h); if (c) text = c.data;
+      }
+    } catch (e) {}
+    if (text && await acceptCode(text)) return;
+  }
+  setTimeout(scanLoop, 200);
+}
+async function acceptCode(text) {
+  let c;
+  try { c = JSON.parse(text); } catch (e) { return false; }
+  if (!c || !c.u || !c.s || !c.k || !c.t) return false;
+  stopScan();
+  cloud = { u: c.u, s: c.s, k: c.k, t: c.t };
+  try { await api({ a: 'ping', id: myId }); }
+  catch (e) { cloud = null; alert('接続できませんでした（' + e.message + '）。QRを表示し直して、もう一度読み取ってください。'); return true; }
+  localStorage.setItem('doorcam-view', JSON.stringify(cloud));
+  toast('登録しました');
+  boot();
+  return true;
+}
+
+// ---------- 暗号の解読 ----------
+let aesKey = null;
+async function key() {
+  if (!aesKey) aesKey = await crypto.subtle.importKey('raw', Uint8Array.from(atob(cloud.k), c => c.charCodeAt(0)), 'AES-GCM', false, ['decrypt']);
+  return aesKey;
+}
+const fromB64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+
+// 動画1本を取ってきて解読し、再生できる形にする（同時に取りに行かないよう、取得中のものは共有）
+const blobCache = new Map(); // name -> Promise<url>
+async function fetchClip(item) {
+  const parts = [];
+  for (let i = 0; i < item.meta.parts; i++) parts.push((await api({ a: 'get', n: item.name + '.' + String(i).padStart(3, '0') })).d);
+  const bufs = parts.map(fromB64), total = bufs.reduce((s, b) => s + b.length, 0), all = new Uint8Array(total);
+  let o = 0; for (const b of bufs) { all.set(b, o); o += b.length; }
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: all.subarray(0, 12) }, await key(), all.subarray(12));
+  return URL.createObjectURL(new Blob([plain], { type: (item.meta.type || 'video/mp4').split(';')[0] }));
+}
+function getClip(item) {
+  if (!blobCache.has(item.name)) {
+    const p = fetchClip(item);
+    p.catch(() => blobCache.delete(item.name));
+    blobCache.set(item.name, p);
+    // メモリを使いすぎないよう、古いものから捨てる（最大8本）
+    while (blobCache.size > 8) {
+      const [k, v] = blobCache.entries().next().value;
+      if (cur >= 0 && list[cur] && list[cur].name === k) break;
+      blobCache.delete(k); v.then(u => URL.revokeObjectURL(u)).catch(() => {});
+    }
+  }
+  return blobCache.get(item.name);
+}
+
+// ---------- サムネイル（この端末の中だけに保存） ----------
+let tdb = null;
+function openThumbDB() {
+  return new Promise(res => {
+    const r = indexedDB.open('doorcam-view', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('thumbs');
+    r.onsuccess = () => { tdb = r.result; res(); };
+    r.onerror = () => res();
+  });
+}
+function getThumb(name) {
+  return new Promise(res => {
+    if (!tdb) return res(null);
+    const r = tdb.transaction('thumbs').objectStore('thumbs').get(name);
+    r.onsuccess = () => res(r.result || null); r.onerror = () => res(null);
+  });
+}
+function putThumb(name, data) { try { tdb.transaction('thumbs', 'readwrite').objectStore('thumbs').put(data, name); } catch (e) {} }
+async function makeThumb(item) {
+  const url = await getClip(item);
+  return new Promise(res => {
+    const v = document.createElement('video');
+    v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
+    const done = d => { v.removeAttribute('src'); v.load(); res(d); };
+    v.onloadeddata = () => { v.currentTime = Math.min(1.2, (v.duration || 2) / 2); };
+    v.onseeked = () => {
+      const c = document.createElement('canvas'), w = 240;
+      c.width = w; c.height = Math.round(v.videoHeight / v.videoWidth * w) || 135;
+      c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+      done(c.toDataURL('image/jpeg', 0.6));
+    };
+    v.onerror = () => done(null);
+    setTimeout(() => done(null), 15000);
+  });
+}
+// 画面に見えているカードのサムネイルだけ、1本ずつ順番に作る
+const thumbQueue = []; let thumbBusy = false;
+const io = new IntersectionObserver(es => es.forEach(e => {
+  if (e.isIntersecting) { io.unobserve(e.target); thumbQueue.push(e.target); runThumbs(); }
+}), { rootMargin: '200px' });
+async function runThumbs() {
+  if (thumbBusy) return; thumbBusy = true;
+  while (thumbQueue.length) {
+    const el = thumbQueue.shift(), item = list.find(x => x.name === el.dataset.name);
+    if (!item || !el.isConnected) continue;
+    let d = await getThumb(item.name);
+    if (!d) { try { d = await makeThumb(item); } catch (e) { d = null; } if (d) putThumb(item.name, d); }
+    if (d) { el.style.backgroundImage = `url(${d})`; el.textContent = ''; }
+  }
+  thumbBusy = false;
+}
+
+// ---------- 一覧 ----------
+let list = [], day = null;
+const dayOf = n => n.slice(0, 8);
+const hms = n => `${n.slice(9, 11)}:${n.slice(11, 13)}:${n.slice(13, 15)}`;
+const dayLabel = d => { const t = new Date(), y = new Date(Date.now() - 864e5); const f = x => `${x.getFullYear()}${pad(x.getMonth() + 1)}${pad(x.getDate())}`;
+  return d === f(t) ? '今日' : d === f(y) ? '昨日' : `${Number(d.slice(4, 6))}/${Number(d.slice(6, 8))}`; };
+
+async function loadList() {
+  $('listInfo').textContent = '読み込み中…';
+  try {
+    list = (await api({ a: 'list' })).list;
+    const days = [...new Set(list.map(x => dayOf(x.name)))];
+    if (!day || !days.includes(day)) day = days[0] || null;
+    const box = $('days'); box.innerHTML = '';
+    for (const d of days) {
+      const b = document.createElement('button');
+      b.textContent = `${dayLabel(d)}（${list.filter(x => dayOf(x.name) === d).length}）`;
+      b.className = d === day ? 'on' : '';
+      b.onclick = () => { day = d; loadList.render(); [...box.children].forEach(c => c.className = ''); b.className = 'on'; };
+      box.appendChild(b);
+    }
+    const gb = list.reduce((s, x) => s + x.size, 0) / 1024 ** 3;
+    $('listInfo').textContent = `ドライブに${list.length}本（${gb.toFixed(2)}GB）`;
+    loadList.render();
+  } catch (e) {
+    $('listInfo').textContent = '読み込めませんでした：' + e.message;
+  }
+}
+loadList.render = () => {
+  const items = list.filter(x => dayOf(x.name) === day);
+  // 時間帯ごとの件数（続きの動画は数えない）
+  const cnt = Array(24).fill(0);
+  items.filter(x => !x.meta.cont).forEach(x => cnt[Number(x.name.slice(9, 11))]++);
+  const max = Math.max(1, ...cnt), hb = $('hours'); hb.innerHTML = '';
+  cnt.forEach((c, h) => { const d = document.createElement('div'); d.style.height = (c / max * 100) + '%'; d.className = c ? 'has' : ''; d.title = `${h}時：${c}回`; hb.appendChild(d); });
+  $('dayCount').textContent = day ? `${dayLabel(day)}：${cnt.reduce((a, b) => a + b, 0)}回` : '';
+  const g = $('grid'); g.innerHTML = '';
+  if (!items.length) { g.innerHTML = '<div class="empty">まだ録画はありません</div>'; return; }
+  for (const x of items) {
+    const card = document.createElement('div'); card.className = 'card';
+    const th = document.createElement('div'); th.className = 'thumb'; th.dataset.name = x.name; th.textContent = '…';
+    const meta = document.createElement('div'); meta.className = 'meta';
+    meta.innerHTML = `<span></span><span class="sub"></span>`;
+    meta.firstChild.textContent = hms(x.name);
+    meta.lastChild.innerHTML = (x.meta.cont ? '<span class="tag">続き </span>' : '') + `${x.meta.dur}秒`;
+    card.append(th, meta);
+    card.onclick = () => playAt(list.indexOf(x));
+    g.appendChild(card);
+    io.observe(th);
+  }
+};
+$('reloadBtn').onclick = loadList;
+
+// ---------- 再生画面 ----------
+// 一覧は新しい順。「次へ」＝後に撮った動画、「前へ」＝前に撮った動画
+const player = $('player'), SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
+let cur = -1, speed = 1;
+try { speed = Number(localStorage.getItem('doorcam-speed')) || 1; } catch (e) {}
+const sp = $('speeds');
+SPEEDS.forEach(s => { const b = document.createElement('button'); b.textContent = s + '倍'; b.onclick = () => setSpeed(s); sp.appendChild(b); });
+function setSpeed(s) {
+  speed = s; player.playbackRate = s;
+  [...sp.children].forEach((b, i) => b.className = SPEEDS[i] === s ? 'on' : '');
+  try { localStorage.setItem('doorcam-speed', s); } catch (e) {}
+}
+player.preservesPitch = true; player.webkitPreservesPitch = true; // 速くしても声の高さを変えない
+
+async function playAt(i) {
+  if (i < 0 || i >= list.length) return;
+  cur = i; const x = list[i];
+  $('pv').style.display = 'flex';
+  $('pvName').textContent = `${dayLabel(dayOf(x.name))} ${hms(x.name)}`;
+  $('pvInfo').textContent = `${list.length - i} / ${list.length}本目・${x.meta.cont ? '前の続き・' : ''}${x.meta.dur}秒`;
+  $('pvPrev').disabled = i >= list.length - 1;
+  $('pvNext').disabled = i <= 0;
+  resetZoom();
+  $('loading').style.display = 'flex';
+  try {
+    const url = await getClip(x);
+    if (cur !== i) return;
+    player.src = url; player.playbackRate = speed;
+    await player.play().catch(() => {});
+    player.playbackRate = speed;
+  } catch (e) { toast('読み込めませんでした：' + e.message); }
+  finally { if (cur === i) $('loading').style.display = 'none'; }
+  // 前後の動画を先に読み込んでおく（すぐ切り替えられるように）
+  if (list[i - 1]) getClip(list[i - 1]);
+  if (list[i + 1]) getClip(list[i + 1]);
+}
+$('pvPrev').onclick = () => playAt(cur + 1);
+$('pvNext').onclick = () => playAt(cur - 1);
+$('pvClose').onclick = () => { player.pause(); $('pv').style.display = 'none'; };
+player.addEventListener('ended', () => { if ($('pvAuto').checked && cur > 0) playAt(cur - 1); });
+player.addEventListener('ratechange', () => { if (Math.abs(player.playbackRate - speed) > 0.01 && player.playbackRate !== 0) player.playbackRate = speed; });
+const fmt = t => isFinite(t) ? `${Math.floor(t / 60)}:${pad(Math.floor(t % 60))}` : '0:00';
+player.addEventListener('timeupdate', () => {
+  if (!seeking && player.duration) $('seek').value = player.currentTime / player.duration * 1000;
+  $('tCur').textContent = fmt(player.currentTime); $('tDur').textContent = fmt(player.duration);
+});
+player.addEventListener('play', () => $('playBtn').textContent = '一時停止');
+player.addEventListener('pause', () => $('playBtn').textContent = '再生');
+let seeking = false;
+$('seek').addEventListener('input', e => { seeking = true; if (player.duration) player.currentTime = e.target.value / 1000 * player.duration; });
+$('seek').addEventListener('change', () => { seeking = false; });
+$('playBtn').onclick = () => player.paused ? player.play() : player.pause();
+$('back10').onclick = () => { player.currentTime = Math.max(0, player.currentTime - 10); };
+$('stepBtn').onclick = () => { player.pause(); player.currentTime = Math.min(player.duration || 0, player.currentTime + 1 / 15); };
+$('muteBtn').onclick = () => { player.muted = !player.muted; $('muteBtn').textContent = player.muted ? '消音中' : '音あり'; };
+
+// 拡大（2本指）とスワイプ（1本指で左右）
+let zoom = 1, ox = 0, oy = 0, pinch = null, swipe = null, lastTap = 0;
+function applyZoom() { player.style.transform = `translate(${ox}px,${oy}px) scale(${zoom})`; }
+function resetZoom() { zoom = 1; ox = 0; oy = 0; applyZoom(); }
+const stage = $('stage');
+const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+const mid = (t, r) => ({ x: (t[0].clientX + t[1].clientX) / 2 - r.left, y: (t[0].clientY + t[1].clientY) / 2 - r.top });
+stage.addEventListener('touchstart', e => {
+  const r = stage.getBoundingClientRect();
+  if (e.touches.length === 2) { pinch = { d: dist(e.touches), z: zoom, m: mid(e.touches, r), ox, oy }; swipe = null; }
+  else if (e.touches.length === 1) {
+    swipe = { x: e.touches[0].clientX, y: e.touches[0].clientY, ox, oy };
+    const now = Date.now(); if (now - lastTap < 300) resetZoom(); lastTap = now;
+  }
+}, { passive: true });
+stage.addEventListener('touchmove', e => {
+  if (pinch && e.touches.length === 2) {
+    const z = Math.min(5, Math.max(1, pinch.z * dist(e.touches) / pinch.d));
+    // 指の真ん中を中心に拡大する
+    ox = pinch.m.x - (pinch.m.x - pinch.ox) * z / pinch.z; oy = pinch.m.y - (pinch.m.y - pinch.oy) * z / pinch.z;
+    zoom = z; if (zoom === 1) { ox = 0; oy = 0; } applyZoom();
+  } else if (swipe && zoom > 1 && e.touches.length === 1) { // 拡大中は1本指で移動
+    ox = swipe.ox + e.touches[0].clientX - swipe.x; oy = swipe.oy + e.touches[0].clientY - swipe.y; applyZoom();
+  }
+}, { passive: true });
+stage.addEventListener('touchend', e => {
+  if (pinch && e.touches.length < 2) { pinch = null; return; }
+  if (swipe && zoom === 1 && e.changedTouches.length) {
+    const dx = e.changedTouches[0].clientX - swipe.x, dy = e.changedTouches[0].clientY - swipe.y;
+    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) playAt(dx < 0 ? cur - 1 : cur + 1);
+    else if (Math.abs(dx) < 10 && Math.abs(dy) < 10) { player.paused ? player.play() : player.pause(); }
+  }
+  swipe = null;
+}, { passive: true });
+stage.addEventListener('click', e => { if (!('ontouchstart' in window)) player.paused ? player.play() : player.pause(); });
+
+// ---------- 視聴台数（30秒ごと） ----------
+let ackInfo = null;
+async function ping() {
+  if (!cloud || document.visibilityState !== 'visible') return;
+  try {
+    const r = await api({ a: 'ping', id: myId });
+    $('viewers').textContent = `視聴中 ${r.viewers}台`; $('viewers').className = 'badge live';
+    ackInfo = r.ack; showCfgState();
+  } catch (e) { $('viewers').textContent = '接続できません'; $('viewers').className = 'badge'; }
+}
+setInterval(ping, 30000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { ping(); } });
+
+// ---------- 録画用iPhoneの設定 ----------
+let sentVer = 0, remote = {};
+$('setBtn').onclick = async () => {
+  $('settings').style.display = 'block';
+  if (!cloud) return;
+  $('topic').textContent = cloud.t;
+  try {
+    remote = (await api({ a: 'cfg' })).cfg || {};
+    const u = (await api({ a: 'usage' }));
+    $('rSens').value = remote.sens || 60; $('rSensVal').textContent = $('rSens').value;
+    $('rDim').value = remote.dim != null ? String(remote.dim) : '1';
+    $('rAudio').value = remote.audio != null ? String(remote.audio) : '1';
+    $('rCap').value = remote.cap ? String(remote.cap) : '20';
+    $('rRetain').value = String(remote.retainDays || u.retainDays || 7);
+    sentVer = remote.ver || 0;
+    await ping();
+  } catch (e) { $('cfgState').textContent = '読み込めませんでした：' + e.message; }
+};
+$('setClose').onclick = () => { $('settings').style.display = 'none'; };
+$('rSens').oninput = e => $('rSensVal').textContent = e.target.value;
+function showCfgState() {
+  if (!sentVer) { $('cfgState').textContent = ''; return; }
+  const done = ackInfo && ackInfo.ver >= sentVer;
+  $('cfgState').textContent = done ? '✓ 録画用iPhoneに反映済み' : '反映待ち（最大で数分）';
+}
+$('cfgSend').onclick = async () => {
+  const c = Object.assign({}, remote, {
+    sens: Number($('rSens').value), dim: $('rDim').value, audio: $('rAudio').value,
+    cap: $('rCap').value, retainDays: Number($('rRetain').value)
+  });
+  delete c.ver;
+  try { const r = await api({ a: 'setcfg', c }); sentVer = r.ver; remote = Object.assign(c, { ver: r.ver }); showCfgState(); toast('送りました'); }
+  catch (e) { toast('送れませんでした：' + e.message); }
+};
+// 反映済みかどうかを、設定画面を開いている間は10秒ごとに確認
+setInterval(() => { if ($('settings').style.display === 'block' && sentVer && !(ackInfo && ackInfo.ver >= sentVer)) ping(); }, 10000);
+
+// ---------- 通知（ntfy） ----------
+$('ntfyOpen').onclick = () => { location.href = 'ntfy://ntfy.sh/' + cloud.t; setTimeout(() => { if (document.visibilityState === 'visible') window.open('https://ntfy.sh/' + cloud.t, '_blank'); }, 1500); };
+$('ntfyCopy').onclick = async () => { try { await navigator.clipboard.writeText(cloud.t); toast('コピーしました'); } catch (e) { toast('コピーできませんでした'); } };
+$('forget').onclick = () => {
+  if (!confirm('この端末の登録を解除しますか？')) return;
+  localStorage.removeItem('doorcam-view'); cloud = null; aesKey = null; blobCache.clear();
+  $('settings').style.display = 'none'; boot();
+};
+
+// ---------- 版の確認（古い画面が使い回されないように） ----------
+(async () => {
+  try {
+    const t = await (await fetch(location.pathname + '?check=' + Date.now(), { cache: 'no-store' })).text();
+    const m = t.match(/const APP_VER = (\d+);/);
+    if (m && Number(m[1]) > APP_VER) location.replace(location.pathname + '?v=' + m[1]);
+  } catch (e) {}
+})();
+
+// ---------- 起動 ----------
+async function boot() {
+  setSpeed(speed);
+  $('setup').style.display = cloud ? 'none' : 'block';
+  $('home').style.display = cloud ? 'block' : 'none';
+  $('setBtn').style.display = cloud ? '' : 'none';
+  $('reloadBtn').style.display = cloud ? '' : 'none';
+  if (!cloud) { $('viewers').textContent = '未登録'; return; }
+  await openThumbDB();
+  ping(); loadList();
+}
+boot();
+// 画面に戻ってきたら一覧を新しくする
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && cloud && $('pv').style.display !== 'flex') loadList(); });
+</script>
+</body>
+</html>
