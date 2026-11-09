@@ -127,9 +127,9 @@
   <div class="top"><div><div id="pvName" class="name"></div><div id="pvInfo" class="sub"></div></div><button id="pvClose">閉じる</button></div>
   <video id="player" controls playsinline></video>
   <div class="bar">
-    <button id="pvPrev">◀ 前へ</button>
+    <button id="pvPrev">◀ 新しい</button>
     <label class="sub"><input type="checkbox" id="pvAuto" checked> 続けて再生</label>
-    <button id="pvNext">次へ ▶</button>
+    <button id="pvNext">古い ▶</button>
   </div>
 </div>
 
@@ -456,6 +456,14 @@ function newRecorder(firstStart) {
   mr.onstop = () => saveRec(r);
   mr.onerror = e => { lastError = '録画エラー：' + ((e.error && e.error.message) || '不明'); };
   mr.start();
+  // 視聴アプリの一覧用に、小さなサムネイル（約10KB）を作っておく
+  setTimeout(() => {
+    try {
+      const c = document.createElement('canvas'); c.width = 240; c.height = Math.round(rc.height / rc.width * 240);
+      c.getContext('2d').drawImage(rc, 0, 0, c.width, c.height);
+      c.toBlob(b => { if (b) b.arrayBuffer().then(buf => { r.thumb = buf; }); }, 'image/jpeg', 0.6);
+    } catch (e) {}
+  }, 1500);
   return r;
 }
 
@@ -476,7 +484,6 @@ function onMotion(m) {
       drawDelayed();
       rec = newRecorder(true);
       detectCount++;
-      notify(rec.name);
       showRec(true);
       return;
     }
@@ -502,7 +509,7 @@ async function saveRec(r) {
   while (names.has(name)) name = `${r.name}_${n++}`;
   const dur = Math.round(((r.endLive || performance.now()) - r.startLive) / 1000);
   try {
-    await putClip({ name, size: blob.size, dur, type: blob.type, cont: !r.first, uploaded: false }, blob);
+    await putClip({ name, size: blob.size, dur, type: blob.type, cont: !r.first, uploaded: false, thumb: r.thumb || null }, blob);
     kickUpload();
     savedCount++; lastSaved = name.slice(9, 11) + ':' + name.slice(11, 13) + ':' + name.slice(13, 15);
     await enforceCap();
@@ -572,7 +579,7 @@ $('listBtn').onclick = openList;
 $('closeList').onclick = () => { $('list').style.display = 'none'; touch(); };
 
 // ---------- 再生画面（前へ・次へ・スワイプ） ----------
-// 一覧は新しい順。「次へ」＝後に撮った動画、「前へ」＝前に撮った動画
+// 一覧は新しい順。左のボタン「新しい」＝後に撮った動画、右のボタン「古い」＝前に撮った動画
 let clipList = [], cur = -1;
 async function playAt(i) {
   if (i < 0 || i >= clipList.length) return;
@@ -580,31 +587,31 @@ async function playAt(i) {
   const m = clipList[i], p = $('player');
   $('pvName').textContent = m.name;
   $('pvInfo').textContent = `${clipList.length - i} / ${clipList.length}本目・${m.cont ? '前の続き・' : ''}${m.dur}秒`;
-  $('pvPrev').disabled = i >= clipList.length - 1;
-  $('pvNext').disabled = i <= 0;
+  $('pvPrev').disabled = i <= 0;
+  $('pvNext').disabled = i >= clipList.length - 1;
   $('pv').style.display = 'flex';
   if (playingUrl) URL.revokeObjectURL(playingUrl);
   playingUrl = URL.createObjectURL(await getBlob(m.name));
   p.src = playingUrl;
   p.play().catch(() => {});
 }
-$('pvPrev').onclick = () => playAt(cur + 1);
-$('pvNext').onclick = () => playAt(cur - 1);
+$('pvPrev').onclick = () => playAt(cur - 1);
+$('pvNext').onclick = () => playAt(cur + 1);
 $('pvClose').onclick = () => { $('player').pause(); $('pv').style.display = 'none'; touch(); openList(); };
 $('player').addEventListener('ended', () => { if ($('pvAuto').checked && cur > 0) playAt(cur - 1); });
-// 左にスワイプ＝次へ、右にスワイプ＝前へ
+// 左にスワイプ＝古い動画（一覧で右へ進む向き）、右にスワイプ＝新しい動画
 let swX = null, swY = null;
 $('pv').addEventListener('touchstart', e => { swX = e.touches[0].clientX; swY = e.touches[0].clientY; }, { passive: true });
 $('pv').addEventListener('touchend', e => {
   if (swX === null) return;
   const dx = e.changedTouches[0].clientX - swX, dy = e.changedTouches[0].clientY - swY;
   swX = null;
-  if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) playAt(dx < 0 ? cur - 1 : cur + 1);
+  if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) playAt(dx < 0 ? cur + 1 : cur - 1);
 }, { passive: true });
 
 // ---------- 版の確認（古い画面が使い回されないように） ----------
 // iPhoneは同じページを最大10分ほど使い回すため、起動時に最新版があれば読み込み直す
-const APP_VER = 7;
+const APP_VER = 8;
 $('verInfo').textContent = 'アプリの版：' + APP_VER;
 (async () => {
   try {
@@ -679,6 +686,7 @@ async function uploadLoop() {
       const raw = (r instanceof Blob) ? await r.arrayBuffer() : r.buf;
       const enc = await encrypt(raw);
       const parts = Math.max(1, Math.ceil(enc.length / PART));
+      if (m.thumb) await api({ a: 'put', n: m.name + '.thm', d: b64(await encrypt(m.thumb)) });
       for (let i = parts - 1; i >= 0; i--) { // 最後に000を送る（000が届いた時点で全部そろっている）
         const body = { a: 'put', n: m.name + '.' + String(i).padStart(3, '0'), d: b64(enc.subarray(i * PART, (i + 1) * PART)) };
         if (i === 0) body.m = { parts, dur: m.dur, cont: !!m.cont, type: m.type || 'video/mp4', size: m.size };
@@ -698,18 +706,6 @@ async function uploadLoop() {
     uploading = false;
     clearTimeout(upTimer); upTimer = setTimeout(uploadLoop, wait);
   }
-}
-
-// 検知したらスマホに通知（ntfy）。5分以内の検知はまとめる
-let lastNotify = 0;
-// 通知をタップすると視聴アプリが開き、その時刻の動画を再生する
-const VIEWER_URL = new URL('viewer.html', location.href).href;
-function notify(name) {
-  if (!cloud || Date.now() - lastNotify < 5 * 60000) return;
-  lastNotify = Date.now();
-  const d = new Date();
-  const q = '?title=' + encodeURIComponent('ドアカメラ') + '&click=' + encodeURIComponent(VIEWER_URL + '#t=' + name) + '&tags=door';
-  fetch('https://ntfy.sh/' + cloud.t + q, { method: 'POST', body: `動きを検知しました（${pad(d.getHours())}:${pad(d.getMinutes())}）。タップすると動画を開きます` }).catch(() => {});
 }
 
 // 視聴アプリから変えた設定を、2分ごとに取りに行って反映する

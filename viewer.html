@@ -118,17 +118,6 @@
     <div class="sub">録画用iPhoneが2分ごとに設定を取りに来るので、反映まで最大で数分かかります。</div>
   </div>
 
-  <h2>通知</h2>
-  <div class="panel">
-    <div class="sub">ntfyアプリで次の宛先を登録すると、検知したときに通知が届きます（5分以内の検知はまとめて1回）。</div>
-    <div class="row"><code id="topic" style="font-size:13px;word-break:break-all"></code></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="primary" id="ntfyOpen">ntfyで開く</button>
-      <button id="ntfyCopy">宛先をコピー</button>
-    </div>
-    <div class="sub" style="margin-top:8px">うまく開かない場合：ntfyアプリの「＋」→「トピック名」に上の宛先を貼り付けて「購読」してください。</div>
-  </div>
-
   <h2>この端末</h2>
   <div class="panel">
     <div class="sub" id="ver"></div>
@@ -158,9 +147,9 @@
       <button id="muteBtn">音あり</button>
     </div>
     <div class="line">
-      <button id="pvPrev">◀ 前へ</button>
+      <button id="pvPrev">◀ 新しい</button>
       <label class="sub" style="flex:none;padding:0 6px"><input type="checkbox" id="pvAuto" checked> 続けて再生</label>
-      <button id="pvNext">次へ ▶</button>
+      <button id="pvNext">古い ▶</button>
     </div>
   </div>
 </div>
@@ -170,7 +159,7 @@
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-const APP_VER = 2;
+const APP_VER = 3;
 $('ver').textContent = '視聴アプリの版：' + APP_VER;
 function toast(t, ms = 2200) { const e = $('toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => e.style.display = 'none', ms); }
 const pad = n => String(n).padStart(2, '0');
@@ -247,14 +236,34 @@ async function key() {
 }
 const fromB64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 
+// ドライブから直接ダウンロードするための一時的な許可証（窓口から受け取り、50分使い回す）
+let tok = null;
+async function token() {
+  if (!tok || Date.now() > tok.exp) { const r = await api({ a: 'token' }); tok = { t: r.token, exp: r.exp }; }
+  return tok.t;
+}
+// ファイル1つを取ってくる：まずドライブから直接（速い）、だめなら窓口経由
+async function fetchPart(id, name) {
+  if (id) {
+    try {
+      const r = await fetch('https://www.googleapis.com/drive/v3/files/' + id + '?alt=media', { headers: { Authorization: 'Bearer ' + await token() } });
+      if (r.status === 401) tok = null;
+      if (r.ok) return new Uint8Array(await r.arrayBuffer());
+    } catch (e) {}
+  }
+  return fromB64((await api({ a: 'get', n: name })).d);
+}
+async function decrypt(all) {
+  return crypto.subtle.decrypt({ name: 'AES-GCM', iv: all.subarray(0, 12) }, await key(), all.subarray(12));
+}
 // 動画1本を取ってきて解読し、再生できる形にする（同時に取りに行かないよう、取得中のものは共有）
 const blobCache = new Map(); // name -> Promise<url>
 async function fetchClip(item) {
-  const parts = [];
-  for (let i = 0; i < item.meta.parts; i++) parts.push((await api({ a: 'get', n: item.name + '.' + String(i).padStart(3, '0') })).d);
-  const bufs = parts.map(fromB64), total = bufs.reduce((s, b) => s + b.length, 0), all = new Uint8Array(total);
+  const ids = item.ids || [];
+  const bufs = await Promise.all(Array.from({ length: item.meta.parts }, (_, i) => fetchPart(ids[i], item.name + '.' + String(i).padStart(3, '0'))));
+  const total = bufs.reduce((s, b) => s + b.length, 0), all = new Uint8Array(total);
   let o = 0; for (const b of bufs) { all.set(b, o); o += b.length; }
-  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: all.subarray(0, 12) }, await key(), all.subarray(12));
+  const plain = await decrypt(all);
   return URL.createObjectURL(new Blob([plain], { type: (item.meta.type || 'video/mp4').split(';')[0] }));
 }
 function getClip(item) {
@@ -290,38 +299,45 @@ function getThumb(name) {
   });
 }
 function putThumb(name, data) { try { tdb.transaction('thumbs', 'readwrite').objectStore('thumbs').put(data, name); } catch (e) {} }
-async function makeThumb(item) {
-  const url = await getClip(item);
-  return new Promise(res => {
-    const v = document.createElement('video');
-    v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
-    const done = d => { v.removeAttribute('src'); v.load(); res(d); };
-    v.onloadeddata = () => { v.currentTime = Math.min(1.2, (v.duration || 2) / 2); };
-    v.onseeked = () => {
-      const c = document.createElement('canvas'), w = 240;
-      c.width = w; c.height = Math.round(v.videoHeight / v.videoWidth * w) || 135;
-      c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
-      done(c.toDataURL('image/jpeg', 0.6));
-    };
-    v.onerror = () => done(null);
-    setTimeout(() => done(null), 15000);
-  });
+// 録画アプリが作った小さなサムネイル（約10KB）だけを取ってくる
+async function fetchThumb(item) {
+  const plain = await decrypt(await fetchPart(item.thumb, item.name + '.thm'));
+  return URL.createObjectURL(new Blob([plain], { type: 'image/jpeg' }));
 }
-// 画面に見えているカードのサムネイルだけ、1本ずつ順番に作る
-const thumbQueue = []; let thumbBusy = false;
+const blobToData = b => new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(b); });
+// サムネイルが無い古い動画は、再生したときにその画面から作る
+function thumbFromPlayer(item) {
+  try {
+    if (!player.videoWidth) return;
+    const c = document.createElement('canvas'), w = 240;
+    c.width = w; c.height = Math.round(player.videoHeight / player.videoWidth * w);
+    c.getContext('2d').drawImage(player, 0, 0, c.width, c.height);
+    const d = c.toDataURL('image/jpeg', 0.6);
+    putThumb(item.name, d);
+    const el = document.querySelector(`.thumb[data-name="${item.name}"]`);
+    if (el) { el.style.backgroundImage = `url(${d})`; el.textContent = ''; }
+  } catch (e) {}
+}
+async function makeThumb(item) {
+  if (item.thumb) { const u = await fetchThumb(item); const d = await blobToData(await (await fetch(u)).blob()); URL.revokeObjectURL(u); return d; }
+  return null;
+}
+// 画面に見えているカードのサムネイルだけ、4つずつ並行して取ってくる
+const thumbQueue = []; let thumbBusy = 0;
 const io = new IntersectionObserver(es => es.forEach(e => {
   if (e.isIntersecting) { io.unobserve(e.target); thumbQueue.push(e.target); runThumbs(); }
 }), { rootMargin: '200px' });
 async function runThumbs() {
-  if (thumbBusy) return; thumbBusy = true;
+  if (thumbBusy >= 4) return; thumbBusy++;
   while (thumbQueue.length) {
     const el = thumbQueue.shift(), item = list.find(x => x.name === el.dataset.name);
     if (!item || !el.isConnected) continue;
     let d = await getThumb(item.name);
     if (!d) { try { d = await makeThumb(item); } catch (e) { d = null; } if (d) putThumb(item.name, d); }
     if (d) { el.style.backgroundImage = `url(${d})`; el.textContent = ''; }
+    else el.textContent = '▶';
   }
-  thumbBusy = false;
+  thumbBusy--;
 }
 
 // ---------- 一覧 ----------
@@ -378,7 +394,7 @@ loadList.render = () => {
 $('reloadBtn').onclick = loadList;
 
 // ---------- 再生画面 ----------
-// 一覧は新しい順。「次へ」＝後に撮った動画、「前へ」＝前に撮った動画
+// 一覧は新しい順（左上が最新）。左のボタン「新しい」＝後に撮った動画、右のボタン「古い」＝前に撮った動画
 const player = $('player'), SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 let cur = -1, speed = 1;
 try { speed = Number(localStorage.getItem('doorcam-speed')) || 1; } catch (e) {}
@@ -397,14 +413,15 @@ async function playAt(i) {
   $('pv').style.display = 'flex';
   $('pvName').textContent = `${dayLabel(dayOf(x.name))} ${hms(x.name)}`;
   $('pvInfo').textContent = `${list.length - i} / ${list.length}本目・${x.meta.cont ? '前の続き・' : ''}${x.meta.dur}秒`;
-  $('pvPrev').disabled = i >= list.length - 1;
-  $('pvNext').disabled = i <= 0;
+  $('pvPrev').disabled = i <= 0;
+  $('pvNext').disabled = i >= list.length - 1;
   resetZoom();
   $('loading').style.display = 'flex';
   try {
     const url = await getClip(x);
     if (cur !== i) return;
     player.src = url; player.playbackRate = speed;
+    if (!x.thumb) player.addEventListener('loadeddata', () => getThumb(x.name).then(d => { if (!d) setTimeout(() => thumbFromPlayer(x), 800); }), { once: true });
     await player.play().catch(() => {});
     player.playbackRate = speed;
   } catch (e) { toast('読み込めませんでした：' + e.message); }
@@ -413,8 +430,8 @@ async function playAt(i) {
   if (list[i - 1]) getClip(list[i - 1]);
   if (list[i + 1]) getClip(list[i + 1]);
 }
-$('pvPrev').onclick = () => playAt(cur + 1);
-$('pvNext').onclick = () => playAt(cur - 1);
+$('pvPrev').onclick = () => playAt(cur - 1);
+$('pvNext').onclick = () => playAt(cur + 1);
 $('pvClose').onclick = () => { player.pause(); $('pv').style.display = 'none'; };
 player.addEventListener('ended', () => { if ($('pvAuto').checked && cur > 0) playAt(cur - 1); });
 player.addEventListener('ratechange', () => { if (Math.abs(player.playbackRate - speed) > 0.01 && player.playbackRate !== 0) player.playbackRate = speed; });
@@ -462,7 +479,7 @@ stage.addEventListener('touchend', e => {
   if (pinch && e.touches.length < 2) { pinch = null; return; }
   if (swipe && zoom === 1 && e.changedTouches.length) {
     const dx = e.changedTouches[0].clientX - swipe.x, dy = e.changedTouches[0].clientY - swipe.y;
-    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) playAt(dx < 0 ? cur - 1 : cur + 1);
+    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) playAt(dx < 0 ? cur + 1 : cur - 1); // 左へスワイプ＝古い動画
     else if (Math.abs(dx) < 10 && Math.abs(dy) < 10) { player.paused ? player.play() : player.pause(); }
   }
   swipe = null;
@@ -487,7 +504,6 @@ let sentVer = 0, remote = {};
 $('setBtn').onclick = async () => {
   $('settings').style.display = 'block';
   if (!cloud) return;
-  $('topic').textContent = cloud.t;
   try {
     remote = (await api({ a: 'cfg' })).cfg || {};
     const u = (await api({ a: 'usage' }));
@@ -519,9 +535,6 @@ $('cfgSend').onclick = async () => {
 // 反映済みかどうかを、設定画面を開いている間は10秒ごとに確認
 setInterval(() => { if ($('settings').style.display === 'block' && sentVer && !(ackInfo && ackInfo.ver >= sentVer)) ping(); }, 10000);
 
-// ---------- 通知（ntfy） ----------
-$('ntfyOpen').onclick = () => { location.href = 'ntfy://ntfy.sh/' + cloud.t; setTimeout(() => { if (document.visibilityState === 'visible') window.open('https://ntfy.sh/' + cloud.t, '_blank'); }, 1500); };
-$('ntfyCopy').onclick = async () => { try { await navigator.clipboard.writeText(cloud.t); toast('コピーしました'); } catch (e) { toast('コピーできませんでした'); } };
 $('forget').onclick = () => {
   if (!confirm('この端末の登録を解除しますか？')) return;
   localStorage.removeItem('doorcam-view'); cloud = null; aesKey = null; blobCache.clear();
