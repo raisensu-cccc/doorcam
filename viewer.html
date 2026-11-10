@@ -10,6 +10,7 @@
 <meta name="theme-color" content="#0b0b0b">
 <title>ドアカメラ</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
   :root { --bg:#0b0b0b; --panel:#1a1a1a; --line:#262626; --fg:#eee; --sub:#9a9a9a; --accent:#3b82f6; --red:#ef4444; --ok:#22c55e; }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -45,6 +46,12 @@
   .empty { text-align:center; color:var(--sub); padding:40px 0; }
   .screen { position:fixed; inset:0; background:var(--bg); z-index:40; display:none; overflow:auto; padding:calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 30px); }
   #scan video { width:100%; max-height:60vh; background:#000; border-radius:8px; object-fit:cover; }
+  input[type=text] { width:100%; font-size:16px; padding:10px; border-radius:8px; border:1px solid #333; background:#111; color:#eee; }
+  ol { padding-left:22px; line-height:1.8; }
+  .dev { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:8px 0; border-top:1px solid var(--line); }
+  .dev:first-child { border-top:0; }
+  #hoQr { background:#fff; color:#111; text-align:center; }
+  #hoQr #hoBox { display:flex; justify-content:center; margin:16px 0; }
   textarea { width:100%; min-height:80px; background:#111; color:#eee; border:1px solid #333; border-radius:8px; padding:8px; font-size:13px; }
   /* 再生画面 */
   #pv { position:fixed; inset:0; background:#000; z-index:45; display:none; flex-direction:column; }
@@ -75,13 +82,7 @@
   </header>
 
   <div id="setup" style="display:none">
-    <div class="panel">
-      <div style="font-weight:700;margin-bottom:6px">はじめに：録画用iPhoneのQRを読み取ってください</div>
-      <div class="sub">録画アプリの「設定」→「視聴する端末を追加（QR）」で表示されるQRコードを読み取ります。</div>
-      <div class="btns" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="primary" id="scanBtn">QRを読み取る</button>
-      </div>
-    </div>
+    <div class="panel" id="setupBody"></div>
   </div>
 
   <div id="home" style="display:none">
@@ -118,11 +119,36 @@
     <div class="sub">録画用iPhoneが2分ごとに設定を取りに来るので、反映まで最大で数分かかります。</div>
   </div>
 
+  <h2>登録済みの端末</h2>
+  <div class="panel">
+    <div id="devList" class="sub">読み込み中…</div>
+    <div class="sub" style="margin-top:8px">なくした・壊れた端末は「解除」してください。その端末からは見られなくなります。<br>端末を追加するときは、録画用iPhoneの「設定」→「視聴する端末を追加（QR）」を使います。</div>
+  </div>
+
+  <h2>録画用iPhoneの交換</h2>
+  <div class="panel">
+    <button id="hoBtn">録画用iPhoneを引き継ぐ</button>
+    <div class="sub" style="margin-top:6px">新しいiPhoneのカメラで読み取るQRを表示します。鍵と設定が新しいiPhoneに移り、以前の録画用iPhoneは使えなくなります（過去の動画はそのまま見られます）。</div>
+  </div>
+
   <h2>この端末</h2>
   <div class="panel">
     <div class="sub" id="ver"></div>
+    <div class="sub" id="myName"></div>
     <div style="margin-top:8px"><button class="warn" id="forget">この端末の登録を解除する</button></div>
-    <div class="sub" style="margin-top:6px">解除すると、もう一度QRを読み取るまで動画を見られなくなります。</div>
+    <div class="sub" style="margin-top:6px">解除すると、もう一度登録の申請をして承認されるまで動画を見られなくなります。</div>
+  </div>
+</div>
+
+<!-- 録画用iPhoneの引き継ぎQR -->
+<div class="screen" id="hoQr">
+  <div class="row"><h1 style="margin:0">録画用iPhoneを引き継ぐ</h1><button id="hoClose">閉じる</button></div>
+  <div style="font-weight:700;font-size:16px;margin-top:10px">新しい録画用iPhoneのカメラで、このQRを読み取ってください</div>
+  <div id="hoBox"></div>
+  <div style="font-size:13px;color:#555;line-height:1.7;text-align:left">
+    ・読み取ると表示されるリンクを開き、案内どおりに進めてください（iPhoneでは途中で「ホーム画面に追加」をお願いします）。<br>
+    ・このQRは<b>10分間・1回だけ</b>使えます。残り <span id="hoLeft"></span>。<br>
+    ・写真に撮ったり、人に送ったりしないでください。
   </div>
 </div>
 
@@ -159,28 +185,137 @@
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-const APP_VER = 4;
+const APP_VER = 5;
 $('ver').textContent = '視聴アプリの版：' + APP_VER;
 function toast(t, ms = 2200) { const e = $('toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => e.style.display = 'none', ms); }
 const pad = n => String(n).padStart(2, '0');
 
-// ---------- 接続情報（QRの中身） ----------
-let cloud = null;
+// ---------- 接続情報 ----------
+// cloud = { u: 窓口のURL, k: 動画の暗号鍵, v2: true }
+// dev   = { did: 端末番号, dt: 端末ごとの合言葉, priv/pub: 鍵を受け取るための鍵ペア, name }
+let cloud = null, dev = null, pend = null;
 try { cloud = JSON.parse(localStorage.getItem('doorcam-view') || 'null'); } catch (e) {}
-let myId = null;
-try { myId = localStorage.getItem('doorcam-id'); if (!myId) { myId = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('doorcam-id', myId); } } catch (e) { myId = 'x' + Date.now(); }
+try { dev = JSON.parse(localStorage.getItem('doorcam-dev') || 'null'); } catch (e) {}
+try { pend = JSON.parse(localStorage.getItem('doorcam-pend') || 'null'); } catch (e) {}
+let setupNote = '';
+if (cloud && !cloud.v2) { // 以前の方式（QRに鍵が入っていた）で登録した端末は、登録し直してもらう
+  cloud = null; localStorage.removeItem('doorcam-view');
+  setupNote = '登録の仕組みが新しくなりました。お手数ですが、下の手順でもう一度登録してください。';
+}
+const myId = dev ? dev.did : null;
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+const standalone = navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+const b64 = buf => { let s = ''; new Uint8Array(buf).forEach(b => s += String.fromCharCode(b)); return btoa(s); };
+const b64u = buf => b64(buf).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const rnd = n => b64u(crypto.getRandomValues(new Uint8Array(n))).replace(/[-_]/g, '').slice(0, n);
+const escH = t => String(t).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+async function post(u, body) {
+  const r = await fetch(u, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) });
+  return r.json();
+}
 async function api(body) {
-  const r = await fetch(cloud.u, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ s: cloud.s }, body)) });
-  const j = await r.json();
-  if (!j.ok) throw new Error(j.err || '失敗');
+  const j = await post(cloud.u, Object.assign({ did: dev.did, dt: dev.dt }, body));
+  if (!j.ok) {
+    if (j.err === 'auth') { lostAccess(); throw new Error('この端末の登録は解除されています'); }
+    throw new Error(j.err || '失敗');
+  }
   return j;
 }
+// 登録が解除された（または拒否された）とき
+function lostAccess() {
+  localStorage.removeItem('doorcam-view'); cloud = null; aesKey = null; tok = null;
+  setupNote = 'この端末の登録は解除されています。見るには、もう一度登録の申請をしてください。';
+  ['pv', 'settings', 'hoQr'].forEach(id => { $(id).style.display = 'none'; });
+  boot();
+}
 
-// ---------- QR読み取り ----------
+// ---------- 登録の申請（録画用iPhoneのQR → 承認メール → 鍵が届く） ----------
+let invCode = null;
+{ const m = location.hash.match(/inv=([A-Za-z0-9]+)/); if (m) invCode = m[1]; }
+function clearHash() { history.replaceState(history.state, '', location.pathname); }
+function renderSetup() {
+  const el = $('setupBody');
+  const note = setupNote ? `<p style="color:#fbbf24">${escH(setupNote)}</p>` : '';
+  if (pend) {
+    el.innerHTML = `<div style="font-weight:700">承認を待っています</div>
+      <p id="pendMsg">rokuga202610@gmail.com に届いた承認メールで「承認する」を押してください。承認されると、1〜2分でこの画面が切り替わります。</p>
+      <div class="sub">端末の名前：${escH(pend.name)}</div>
+      <div style="margin-top:12px"><button id="pendCancel">申請をやめる</button></div>`;
+    $('pendCancel').onclick = () => { if (!confirm('申請をやめますか？')) return; localStorage.removeItem('doorcam-pend'); pend = null; renderSetup(); };
+    return;
+  }
+  if (invCode && isIOS && !standalone) { // Safariとホーム画面のアプリは保存場所が別なので、先にホーム画面に追加してもらう
+    el.innerHTML = note + `<div style="font-weight:700">まずホーム画面に追加してください</div><ol>
+      <li>画面下の<b>共有ボタン</b>（四角から矢印が出ているマーク）を押す</li>
+      <li>「<b>ホーム画面に追加</b>」→「追加」を押す</li>
+      <li>ホーム画面にできた「<b>ドアカメラ</b>」を開く → 続きの手順が表示されます</li></ol>
+      <div class="sub">QRを読み直す必要はありません。QRを表示してから10分以内に行ってください。</div>`;
+    return;
+  }
+  if (invCode) {
+    const guess = /Android/.test(navigator.userAgent) ? 'Galaxy' : isIOS ? 'iPhone' : 'パソコン';
+    el.innerHTML = note + `<div style="font-weight:700">この端末を登録します</div>
+      <p>この端末の名前を入れて「申請」を押してください。承認メールが rokuga202610@gmail.com に届きます。</p>
+      <input type="text" id="regName" maxlength="30" value="${guess}">
+      <div class="sub" style="margin-top:4px">例：お父さんのGalaxy、リビングのiPad</div>
+      <div style="margin-top:12px;display:flex;gap:8px"><button class="primary" id="regBtn">申請</button><button id="regCancel">やめる</button></div>
+      <div class="sub" id="regMsg" style="margin-top:8px"></div>`;
+    $('regBtn').onclick = doRegister;
+    $('regCancel').onclick = () => { invCode = null; clearHash(); renderSetup(); };
+    return;
+  }
+  el.innerHTML = note + `<div style="font-weight:700;margin-bottom:6px">はじめに：この端末を登録してください</div>
+    <ol style="margin:0"><li>録画用iPhoneの「設定」→「<b>視聴する端末を追加（QR）</b>」を押す</li>
+    <li>表示されたQRを、この端末の<b>カメラ</b>で読み取る（下のボタンでも読み取れます）</li>
+    <li>名前を入れて「申請」→ 承認メールで「承認する」</li></ol>
+    <div style="margin-top:10px"><button class="primary" id="scanBtn">QRを読み取る</button></div>`;
+  $('scanBtn').onclick = startScan;
+}
+async function doRegister() {
+  const name = $('regName').value.trim() || '新しい端末';
+  $('regBtn').disabled = true; $('regMsg').textContent = '申請しています…';
+  try {
+    const conf = await (await fetch('config.json?' + Date.now(), { cache: 'no-store' })).json();
+    const kp = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
+    const d = { did: 'v-' + rnd(16), dt: rnd(40), name, priv: await crypto.subtle.exportKey('jwk', kp.privateKey), pub: await crypto.subtle.exportKey('jwk', kp.publicKey) };
+    const r = await post(conf.url, { a: 'register', inv: invCode, did: d.did, dt: d.dt, name, pub: d.pub });
+    if (!r.ok) throw new Error(r.err === 'expired' ? 'QRの有効期限が切れているか、すでに使われています。録画用iPhoneでQRを出し直してください' : r.err === 'too many' ? '申請中の端末が多すぎます' : r.err);
+    dev = d; localStorage.setItem('doorcam-dev', JSON.stringify(dev));
+    pend = { u: conf.url, name, since: Date.now() }; localStorage.setItem('doorcam-pend', JSON.stringify(pend));
+    invCode = null; clearHash(); setupNote = '';
+    renderSetup(); pollStatus();
+  } catch (e) { $('regMsg').textContent = '申請できませんでした：' + e.message; $('regBtn').disabled = false; }
+}
+let pollTimer = null;
+async function pollStatus() {
+  clearTimeout(pollTimer);
+  if (!pend || !dev) return;
+  try {
+    const r = await post(pend.u, { a: 'mystatus', did: dev.did, dt: dev.dt });
+    if (!r.ok || r.status === 'rejected' || r.status === 'revoked') {
+      localStorage.removeItem('doorcam-pend'); pend = null;
+      setupNote = r.status === 'rejected' ? '申請は拒否されました。' : '申請が見つかりませんでした。もう一度やり直してください。';
+      renderSetup(); return;
+    }
+    if (r.status === 'approved' && !r.box && $('pendMsg')) $('pendMsg').textContent = '承認されました。録画用iPhoneから鍵が届くのを待っています（1〜2分）。録画用iPhoneの電源と通信を確認してください。';
+    if (r.status === 'approved' && r.box) {
+      const priv = await crypto.subtle.importKey('jwk', dev.priv, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
+      const epk = await crypto.subtle.importKey('jwk', r.box.epk, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+      const shared = await crypto.subtle.deriveKey({ name: 'ECDH', public: epk }, priv, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+      const plain = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(r.box.iv) }, shared, fromB64(r.box.ct))));
+      cloud = { u: pend.u, k: plain.k, v2: true };
+      localStorage.setItem('doorcam-view', JSON.stringify(cloud));
+      localStorage.removeItem('doorcam-pend'); pend = null;
+      toast('登録が完了しました'); boot(); return;
+    }
+  } catch (e) {}
+  pollTimer = setTimeout(pollStatus, 10000);
+}
+
+// ---------- QR読み取り（端末のカメラで読めないときの予備） ----------
 let scanStream = null, scanning = false;
 const qrCanvas = document.createElement('canvas'), qrCtx = qrCanvas.getContext('2d', { willReadFrequently: true });
-$('scanBtn').onclick = startScan;
 $('scanClose').onclick = closeScan;
 async function startScan() {
   pushLayer('scan');
@@ -211,22 +346,11 @@ async function scanLoop() {
         const c = jsQR(qrCtx.getImageData(0, 0, w, h).data, w, h); if (c) text = c.data;
       }
     } catch (e) {}
-    if (text && await acceptCode(text)) return;
+    const m = text && String(text).match(/#inv=([A-Za-z0-9]+)/);
+    if (m) { closeScan(); invCode = m[1]; renderSetup(); return; }
+    if (text) $('scanMsg').textContent = 'このQRは使えません。録画用iPhoneの「視聴する端末を追加（QR）」のQRを読み取ってください';
   }
   setTimeout(scanLoop, 200);
-}
-async function acceptCode(text) {
-  let c;
-  try { c = JSON.parse(text); } catch (e) { return false; }
-  if (!c || !c.u || !c.s || !c.k || !c.t) return false;
-  closeScan();
-  cloud = { u: c.u, s: c.s, k: c.k, t: c.t };
-  try { await api({ a: 'ping', id: myId }); }
-  catch (e) { cloud = null; alert('接続できませんでした（' + e.message + '）。QRを表示し直して、もう一度読み取ってください。'); return true; }
-  localStorage.setItem('doorcam-view', JSON.stringify(cloud));
-  toast('登録しました');
-  boot();
-  return true;
 }
 
 // ---------- 暗号の解読 ----------
@@ -235,7 +359,7 @@ async function key() {
   if (!aesKey) aesKey = await crypto.subtle.importKey('raw', Uint8Array.from(atob(cloud.k), c => c.charCodeAt(0)), 'AES-GCM', false, ['decrypt']);
   return aesKey;
 }
-const fromB64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const fromB64 = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 
 // ドライブから直接ダウンロードするための一時的な許可証（窓口から受け取り、50分使い回す）
 let tok = null;
@@ -494,7 +618,7 @@ let ackInfo = null;
 async function ping() {
   if (!cloud || document.visibilityState !== 'visible') return;
   try {
-    const r = await api({ a: 'ping', id: myId });
+    const r = await api({ a: 'ping' });
     $('viewers').textContent = `視聴中 ${r.viewers}台`; $('viewers').className = 'badge live';
     ackInfo = r.ack; showCfgState();
   } catch (e) { $('viewers').textContent = '接続できません'; $('viewers').className = 'badge'; }
@@ -519,7 +643,51 @@ $('setBtn').onclick = async () => {
     sentVer = remote.ver || 0;
     await ping();
   } catch (e) { $('cfgState').textContent = '読み込めませんでした：' + e.message; }
+  loadDevices();
 };
+
+// ---------- 登録済みの端末 ----------
+const fmtDate = t => { if (!t) return '-'; const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+async function loadDevices() {
+  $('myName').textContent = dev ? 'この端末の名前：' + dev.name : '';
+  try {
+    const list = (await api({ a: 'devices' })).list;
+    const st = { approved: '', pending: '（承認待ち）', revoked: '（解除済み）' };
+    $('devList').innerHTML = list.filter(d => d.status !== 'revoked').map(d => `<div class="dev">
+      <div><div>${d.role === 'recorder' ? '📷 ' : '📱 '}${escH(d.name)}${d.me ? '（この端末）' : ''}<span class="sub">${st[d.status] || ''}</span></div>
+      <div class="sub">${d.role === 'recorder' ? '録画用・' : ''}登録 ${fmtDate(d.created)}${d.lastSeen ? '・最後に使用 ' + fmtDate(d.lastSeen) : ''}</div></div>
+      ${d.role === 'viewer' && d.status !== 'revoked' && !d.me ? `<button class="warn" data-id="${escH(d.id)}" data-name="${escH(d.name)}">解除</button>` : ''}</div>`).join('') || '登録された端末はありません';
+    $('devList').querySelectorAll('button[data-id]').forEach(b => b.onclick = async () => {
+      if (!confirm(`「${b.dataset.name}」の登録を解除しますか？\nその端末からは動画を見られなくなります。`)) return;
+      try { await api({ a: 'revoke', id: b.dataset.id }); toast('解除しました'); loadDevices(); } catch (e) { toast('解除できませんでした：' + e.message); }
+    });
+  } catch (e) { $('devList').textContent = '読み込めませんでした：' + e.message; }
+}
+
+// ---------- 録画用iPhoneを引き継ぐ（QRの中に使い捨ての鍵。鍵の中身は窓口には渡さない） ----------
+const RECORDER_URL = new URL('recorder.html', location.href).href;
+let hoTimer = null;
+$('hoBtn').onclick = async () => {
+  if (!confirm('録画用iPhoneを新しいiPhoneに引き継ぎますか？\n新しいiPhoneで読み取った時点で、今の録画用iPhoneは使えなくなります。')) return;
+  if (typeof QRCode === 'undefined') { toast('QRを表示できません（通信を確認してください）'); return; }
+  try {
+    const raw = crypto.getRandomValues(new Uint8Array(32));
+    const tk = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt']);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, tk, new TextEncoder().encode(JSON.stringify({ k: cloud.k })));
+    const r = await api({ a: 'handover', box: { iv: b64(iv), ct: b64(ct) } });
+    $('hoBox').innerHTML = '';
+    new QRCode($('hoBox'), { text: RECORDER_URL + '#ho=' + r.tid + '.' + b64u(raw), width: 280, height: 280, correctLevel: QRCode.CorrectLevel.M });
+    pushLayer('ho'); $('hoQr').style.display = 'block';
+    const end = Date.now() + 600000;
+    clearInterval(hoTimer);
+    const tick = () => { const l = Math.max(0, Math.round((end - Date.now()) / 1000)); $('hoLeft').textContent = `${Math.floor(l / 60)}分${pad(l % 60)}秒`; if (!l) closeHo(); };
+    tick(); hoTimer = setInterval(tick, 1000);
+  } catch (e) { toast('QRを作れませんでした：' + e.message); }
+};
+function hideHo() { clearInterval(hoTimer); $('hoBox').innerHTML = ''; $('hoQr').style.display = 'none'; }
+function closeHo() { closeLayer('ho', hideHo); }
+$('hoClose').onclick = closeHo;
 $('setClose').onclick = () => closeLayer('settings', () => { $('settings').style.display = 'none'; });
 $('rSens').oninput = e => $('rSensVal').textContent = e.target.value;
 function showCfgState() {
@@ -539,9 +707,11 @@ $('cfgSend').onclick = async () => {
 // 反映済みかどうかを、設定画面を開いている間は10秒ごとに確認
 setInterval(() => { if ($('settings').style.display === 'block' && sentVer && !(ackInfo && ackInfo.ver >= sentVer)) ping(); }, 10000);
 
-$('forget').onclick = () => {
+$('forget').onclick = async () => {
   if (!confirm('この端末の登録を解除しますか？')) return;
+  try { await api({ a: 'revoke', id: dev.did }); } catch (e) {}
   localStorage.removeItem('doorcam-view'); cloud = null; aesKey = null; blobCache.clear();
+  setupNote = '';
   $('settings').style.display = 'none'; boot();
 };
 
@@ -591,6 +761,7 @@ document.addEventListener('pointerdown', ensureGuard, true);
 window.addEventListener('popstate', () => {
   let closed = true;
   if ($('pv').style.display === 'flex') closePlayer();
+  else if ($('hoQr').style.display === 'block') hideHo();
   else if ($('settings').style.display === 'block') $('settings').style.display = 'none';
   else if ($('scan').style.display === 'block') stopScan();
   else closed = false;
@@ -607,7 +778,8 @@ async function boot() {
   $('home').style.display = cloud ? 'block' : 'none';
   $('setBtn').style.display = cloud ? '' : 'none';
   $('reloadBtn').style.display = cloud ? '' : 'none';
-  if (!cloud) { $('viewers').textContent = '未登録'; return; }
+  if (!cloud) { $('viewers').textContent = pend ? '承認待ち' : '未登録'; renderSetup(); if (pend) pollStatus(); return; }
+  if (invCode) { invCode = null; clearHash(); toast('この端末はすでに登録済みです'); }
   await openThumbDB();
   ping(); await loadList(); openTarget();
 }

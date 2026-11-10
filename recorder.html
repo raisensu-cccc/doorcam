@@ -45,6 +45,10 @@
   #areaScreen { position:fixed; inset:0; background:var(--bg); z-index:42; display:none; flex-direction:column; padding:calc(env(safe-area-inset-top) + 10px) 16px calc(env(safe-area-inset-bottom) + 12px); }
   #qrScreen { position:fixed; inset:0; background:#fff; color:#111; z-index:60; display:none; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:20px; text-align:center; }
   #qrScreen button { background:#333; }
+  #hoScreen { position:fixed; inset:0; background:var(--bg); z-index:65; display:none; flex-direction:column; gap:14px; padding:calc(env(safe-area-inset-top) + 20px) 20px 30px; line-height:1.7; overflow:auto; }
+  #hoScreen ol { padding-left:22px; margin:0; }
+  #scanScreen { position:fixed; inset:0; background:#000; z-index:66; display:none; flex-direction:column; gap:10px; padding:calc(env(safe-area-inset-top) + 12px) 16px 20px; }
+  #scanVid { width:100%; flex:1; min-height:0; object-fit:cover; border-radius:8px; }
   #areaView { flex:1; height:auto; min-height:0; margin:8px 0; }
   .view.full .meter { display:none; }
   #pv { position:fixed; inset:0; background:#000; z-index:45; display:none; flex-direction:column; }
@@ -54,6 +58,7 @@
   #pv .bar button { min-width:96px; }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
 </head>
 <body>
 <main>
@@ -85,10 +90,21 @@
 </div>
 
 <div id="qrScreen">
-  <div style="font-weight:700;font-size:17px">視聴アプリでこのQRを読み取ってください</div>
+  <div style="font-weight:700;font-size:17px">新しい視聴端末のカメラで、このQRを読み取ってください</div>
   <div id="qrBox"></div>
-  <div style="font-size:13px;color:#555">写真に撮ったり、人に送ったりしないでください。<br><span id="qrLeft"></span>秒後に自動で消えます。</div>
+  <div style="font-size:13px;color:#555">読み取ったあと、rokuga202610@gmail.com に届く<b>承認メール</b>で「承認する」を押してください。<br>このQRは10分間・1台だけ有効です。<span id="qrLeft"></span>秒後に画面から消えます。</div>
   <button id="qrClose">閉じる</button>
+</div>
+
+<div id="hoScreen">
+  <div style="font-size:18px;font-weight:700" id="hoTitle">録画用iPhoneの引き継ぎ</div>
+  <div id="hoBody"></div>
+  <div class="btns" id="hoBtns"></div>
+</div>
+
+<div id="scanScreen">
+  <div class="row"><span>視聴アプリの「引き継ぎQR」を読み取ってください</span><button id="scanClose">閉じる</button></div>
+  <video id="scanVid" playsinline muted autoplay></video>
 </div>
 
 <div id="settings">
@@ -107,7 +123,8 @@
   <div class="panel">
     <div class="row"><label>クラウド保存</label><span class="sub" id="cloudInfo">未接続</span></div>
     <div class="btns">
-      <button class="primary" id="cloudBtn">クラウドに接続</button>
+      <button class="primary" id="cloudBtn">クラウドに接続（はじめての設定）</button>
+      <button id="hoScanBtn">引き継ぎQRを読み取る</button>
       <button id="qrBtn" disabled>視聴する端末を追加（QR）</button>
     </div>
   </div>
@@ -611,7 +628,7 @@ $('pv').addEventListener('touchend', e => {
 
 // ---------- 版の確認（古い画面が使い回されないように） ----------
 // iPhoneは同じページを最大10分ほど使い回すため、起動時に最新版があれば読み込み直す
-const APP_VER = 8;
+const APP_VER = 9;
 $('verInfo').textContent = 'アプリの版：' + APP_VER;
 (async () => {
   try {
@@ -622,7 +639,8 @@ $('verInfo').textContent = 'アプリの版：' + APP_VER;
 })();
 
 // ---------- クラウド（受付窓口）への保存 ----------
-// cloud = { u: 窓口のURL, s: 合言葉, k: 暗号鍵, t: 通知の宛先 }
+// cloud = { u: 窓口のURL, s: 合言葉, k: 暗号鍵, v2: 端末ごとの承認方式に切り替え済み }
+const VIEWER_URL = new URL('viewer.html', location.href).href;
 let cloud = null;
 try { cloud = JSON.parse(localStorage.getItem('doorcam-cloud') || 'null'); } catch (e) {}
 const b64 = buf => { let s = ''; const a = new Uint8Array(buf); for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000)); return btoa(s); };
@@ -630,14 +648,19 @@ const rnd = n => b64(crypto.getRandomValues(new Uint8Array(n))).replace(/[+/=]/g
 async function api(body) {
   const r = await fetch(cloud.u, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ s: cloud.s }, body)) });
   const j = await r.json();
-  if (!j.ok) throw new Error(j.err || '失敗');
+  if (!j.ok) {
+    if (j.err === 'auth') { revoked = true; showCloud(); throw new Error('この録画用iPhoneは無効です'); }
+    throw new Error(j.err || '失敗');
+  }
   return j;
 }
-let cloudMsg = '';
+let cloudMsg = '', revoked = false;
 function showCloud() {
-  $('cloudInfo').textContent = cloud ? ('接続済み' + (cloudMsg ? '・' + cloudMsg : '')) : '未接続';
+  $('cloudInfo').textContent = !cloud ? '未接続' : revoked ? '⚠ 別のiPhoneに引き継がれたため、この端末は無効になりました' : ('接続済み' + (cloudMsg ? '・' + cloudMsg : ''));
   $('cloudBtn').style.display = cloud ? 'none' : '';
-  $('qrBtn').disabled = !cloud;
+  $('hoScanBtn').style.display = cloud && !revoked ? 'none' : '';
+  $('qrBtn').disabled = !cloud || revoked;
+  if (revoked) setStatus('⚠ この録画用iPhoneは無効になりました（別のiPhoneに引き継がれました）');
 }
 showCloud();
 
@@ -646,7 +669,7 @@ $('cloudBtn').onclick = async () => {
     const conf = await (await fetch('config.json?' + Date.now(), { cache: 'no-store' })).json();
     if (!conf.url) throw new Error('窓口のURLがまだ設定されていません');
     const key = await crypto.subtle.exportKey('raw', await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']));
-    const c = { u: conf.url, s: rnd(40), k: b64(key), t: 'doorcam-' + rnd(24) };
+    const c = { u: conf.url, s: rnd(40), k: b64(key), v2: true };
     const r = await fetch(c.u, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ a: 'claim', s: c.s }) });
     const j = await r.json();
     if (!j.ok) throw new Error(j.err === 'claimed' ? 'すでに別の端末が接続しています' : j.err);
@@ -716,6 +739,11 @@ async function pullCfg() {
     const c = (await api({ a: 'cfg' })).cfg || {};
     if (!c.ver || c.ver === cfgVer) return;
     cfgVer = c.ver;
+    applyRemote(c);
+    await api({ a: 'ack', ver: c.ver });
+  } catch (e) {}
+}
+function applyRemote(c) {
     if (c.sens) { cfg.sens = Number(c.sens); $('sens').value = cfg.sens; $('sensVal').textContent = cfg.sens; }
     if (c.dim != null) { cfg.dim = String(c.dim); $('dim').value = cfg.dim; }
     if (c.cap) { cfg.cap = String(c.cap); $('cap').value = cfg.cap; enforceCap(); }
@@ -723,25 +751,144 @@ async function pullCfg() {
     if (Array.isArray(c.mask) && c.mask.length === 144) { cfg.mask = c.mask; drawGrid(); }
     if (c.audio != null && String(c.audio) !== cfg.audio) { cfg.audio = String(c.audio); $('audio').value = cfg.audio; saveCfg(); if (wanted && !rec) start(); }
     saveCfg();
-    await api({ a: 'ack', ver: c.ver });
-  } catch (e) {}
 }
 setInterval(pullCfg, 120000);
 setTimeout(pullCfg, 5000);
 
 // QRの表示（60秒で自動的に消える）
 let qrTimer = null;
-$('qrBtn').onclick = () => {
+// 中身は「視聴アプリのURL＋使い捨ての招待番号」だけ。鍵は入れない（承認メールのあとに、その端末専用に渡す）
+$('qrBtn').onclick = async () => {
   if (!cloud || typeof QRCode === 'undefined') { alert('QRを表示できません（通信を確認してください）'); return; }
+  let code;
+  try { code = (await api({ a: 'invite' })).code; } catch (e) { alert('QRを作れませんでした：' + e.message); return; }
   const box = $('qrBox'); box.innerHTML = '';
-  new QRCode(box, { text: JSON.stringify({ v: 1, u: cloud.u, s: cloud.s, k: cloud.k, t: cloud.t }), width: 280, height: 280, correctLevel: QRCode.CorrectLevel.M });
+  new QRCode(box, { text: VIEWER_URL + '#inv=' + code, width: 280, height: 280, correctLevel: QRCode.CorrectLevel.M });
   $('qrScreen').style.display = 'flex';
-  let left = 60; $('qrLeft').textContent = left;
+  let left = 120; $('qrLeft').textContent = left;
   clearInterval(qrTimer);
   qrTimer = setInterval(() => { left--; $('qrLeft').textContent = left; if (left <= 0) closeQr(); }, 1000);
 };
 function closeQr() { clearInterval(qrTimer); $('qrBox').innerHTML = ''; $('qrScreen').style.display = 'none'; touch(); }
 $('qrClose').onclick = closeQr;
+
+// ---------- 承認された視聴端末に鍵を渡す ----------
+// 視聴端末ごとの公開鍵で包むので、窓口やメールからは鍵の中身は見えない
+const fromB64 = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+async function deliverBoxes() {
+  if (!cloud || !cloud.v2 || revoked) return;
+  try {
+    const list = (await api({ a: 'boxes' })).list || [];
+    for (const d of list) {
+      const devPub = await crypto.subtle.importKey('jwk', d.pub, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+      const eph = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
+      const shared = await crypto.subtle.deriveKey({ name: 'ECDH', public: devPub }, eph.privateKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, shared, new TextEncoder().encode(JSON.stringify({ k: cloud.k })));
+      await api({ a: 'putbox', id: d.id, box: { epk: await crypto.subtle.exportKey('jwk', eph.publicKey), iv: b64(iv), ct: b64(ct) } });
+    }
+  } catch (e) {}
+}
+setInterval(deliverBoxes, 30000);
+
+// 以前の方式のQRに入っていた合言葉を無効にするため、合言葉を一度だけ新しくする
+async function upgradeCloud() {
+  if (!cloud || cloud.v2) return;
+  try {
+    const ns = rnd(40);
+    await api({ a: 'rotate', ns });
+    cloud.s = ns; cloud.v2 = true; delete cloud.t;
+    localStorage.setItem('doorcam-cloud', JSON.stringify(cloud));
+  } catch (e) {}
+}
+
+// ズーム・検知エリアを窓口にも控えておく（録画用iPhoneを引き継ぐときに使う）
+let lastLocal = '';
+setInterval(() => {
+  if (!cloud || !cloud.v2 || revoked) return;
+  const st = JSON.stringify({ zoom: cfg.zoom, mask: cfg.mask });
+  if (st !== lastLocal) api({ a: 'local', zoom: cfg.zoom, mask: cfg.mask }).then(() => { lastLocal = st; }).catch(() => {});
+}, 60000);
+
+// ---------- 引き継ぎ（視聴アプリの「録画用iPhoneを引き継ぐ」QRから） ----------
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+const standalone = navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+function parseHo(text) { const m = String(text).match(/#ho=([A-Za-z0-9]+)\.([A-Za-z0-9_-]+)/); return m ? { tid: m[1], tp: m[2] } : null; }
+function hoShow(title, html, btns) {
+  $('hoTitle').textContent = title; $('hoBody').innerHTML = html;
+  const b = $('hoBtns'); b.innerHTML = '';
+  (btns || []).forEach(([label, fn, primary]) => { const x = document.createElement('button'); x.textContent = label; if (primary) x.className = 'primary'; x.onclick = fn; b.appendChild(x); });
+  $('hoScreen').style.display = 'flex';
+}
+function hoHide() { $('hoScreen').style.display = 'none'; touch(); }
+function handleHandover(ho) {
+  if (isIOS && !standalone) { // Safariとホーム画面のアプリは保存場所が別なので、先にホーム画面に追加してもらう
+    hoShow('まずホーム画面に追加してください', `<ol>
+      <li>画面下の<b>共有ボタン</b>（四角から矢印が出ているマーク）を押す</li>
+      <li>「<b>ホーム画面に追加</b>」→「追加」を押す</li>
+      <li>ホーム画面にできた「<b>ドアカメラ録画</b>」を開く → 続きの手順が表示されます</li></ol>
+      <p class="sub">QRを読み直す必要はありません。視聴アプリにQRを表示してから10分以内に行ってください。</p>`);
+    return;
+  }
+  const again = cloud && !revoked;
+  hoShow('このiPhoneを録画用にします', `<p>視聴アプリから引き継ぎます。鍵・設定・ズーム・検知エリアがこのiPhoneに移り、<b>以前の録画用iPhoneは使えなくなります</b>。</p>
+    ${again ? '<p>⚠ このiPhoneはすでに録画用です。引き継ぎをやり直すと、合言葉が新しくなります。</p>' : ''}
+    <p class="sub">過去の動画は、そのまま見られます。</p>`,
+    [['引き継ぐ', () => doRedeem(ho), true], ['やめる', () => { history.replaceState(null, '', location.pathname); hoHide(); }]]);
+}
+async function doRedeem(ho) {
+  hoShow('引き継いでいます…', '<p>少しお待ちください。</p>');
+  try {
+    const conf = await (await fetch('config.json?' + Date.now(), { cache: 'no-store' })).json();
+    const s2 = rnd(40), d = new Date();
+    const r = await (await fetch(conf.url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ a: 'redeem', tid: ho.tid, s: s2, name: `録画用iPhone（${d.getMonth() + 1}/${d.getDate()}〜）` }) })).json();
+    if (!r.ok) throw new Error(r.err === 'expired' ? 'QRの有効期限が切れているか、すでに使われています。視聴アプリでQRを出し直してください' : r.err);
+    const key = await crypto.subtle.importKey('raw', fromB64(ho.tp), 'AES-GCM', false, ['decrypt']);
+    const plain = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(r.box.iv) }, key, fromB64(r.box.ct))));
+    cloud = { u: conf.url, s: s2, k: plain.k, v2: true }; revoked = false; aesKey = null;
+    localStorage.setItem('doorcam-cloud', JSON.stringify(cloud));
+    if (r.cfg) applyRemote(r.cfg);
+    if (r.local) {
+      if (r.local.zoom) { cfg.zoom = Number(r.local.zoom); $('zoom').value = cfg.zoom; if (vtrack) applyZoom(cfg.zoom); }
+      if (Array.isArray(r.local.mask) && r.local.mask.length === 144) { cfg.mask = r.local.mask; drawGrid(); }
+      saveCfg();
+    }
+    history.replaceState(null, '', location.pathname);
+    showCloud(); kickUpload();
+    hoShow('引き継ぎが完了しました', `<p>このiPhoneが録画用になりました。</p><ol>
+      <li>「<b>監視開始</b>」を押して、カメラとマイクを許可する</li>
+      <li>機種によってカメラの写り方が違うので、<b>ズームと検知エリアを確認</b>してください</li></ol>`, [['OK', hoHide, true]]);
+  } catch (e) {
+    hoShow('引き継げませんでした', `<p>${String(e.message).replace(/[<>&]/g, '')}</p>`, [['閉じる', () => { history.replaceState(null, '', location.pathname); hoHide(); }, true]]);
+  }
+}
+// QRを読み取る（ホーム画面から開いたあとで、QRの情報が残っていなかった場合の予備）
+let scanStream = null, scanning = false;
+$('hoScanBtn').onclick = async () => {
+  if (wanted) { alert('先に監視を止める必要があります。アプリを開き直してから、もう一度押してください'); return; }
+  $('scanScreen').style.display = 'flex';
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    $('scanVid').srcObject = scanStream; await $('scanVid').play();
+    scanning = true; scanTick();
+  } catch (e) { alert('カメラを開けませんでした：' + e.message); stopScan(); }
+};
+function stopScan() { scanning = false; if (scanStream) scanStream.getTracks().forEach(t => t.stop()); scanStream = null; $('scanScreen').style.display = 'none'; touch(); }
+$('scanClose').onclick = stopScan;
+const qc = document.createElement('canvas'), qx = qc.getContext('2d', { willReadFrequently: true });
+function scanTick() {
+  if (!scanning) return;
+  const v = $('scanVid');
+  if (v.videoWidth && window.jsQR) {
+    const w = 480, h = Math.round(v.videoHeight / v.videoWidth * w);
+    qc.width = w; qc.height = h; qx.drawImage(v, 0, 0, w, h);
+    const c = jsQR(qx.getImageData(0, 0, w, h).data, w, h);
+    const ho = c && parseHo(c.data);
+    if (ho) { stopScan(); $('settings').style.display = 'none'; handleHandover(ho); return; }
+  }
+  setTimeout(scanTick, 250);
+}
 
 // ---------- 起動 ----------
 (async () => {
@@ -749,8 +896,12 @@ $('qrClose').onclick = closeQr;
     await openDB();
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
     showUsage();
+    await upgradeCloud();
     kickUpload();
+    deliverBoxes();
   } catch (e) { setStatus('保存領域を開けませんでした：' + e.message); }
+  const ho = parseHo(location.hash);
+  if (ho) handleHandover(ho);
 })();
 </script>
 </body>
