@@ -628,7 +628,7 @@ $('pv').addEventListener('touchend', e => {
 
 // ---------- 版の確認（古い画面が使い回されないように） ----------
 // iPhoneは同じページを最大10分ほど使い回すため、起動時に最新版があれば読み込み直す
-const APP_VER = 9;
+const APP_VER = 10;
 $('verInfo').textContent = 'アプリの版：' + APP_VER;
 (async () => {
   try {
@@ -646,15 +646,18 @@ try { cloud = JSON.parse(localStorage.getItem('doorcam-cloud') || 'null'); } cat
 const b64 = buf => { let s = ''; const a = new Uint8Array(buf); for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000)); return btoa(s); };
 const rnd = n => b64(crypto.getRandomValues(new Uint8Array(n))).replace(/[+/=]/g, '').slice(0, n);
 async function api(body) {
-  const r = await fetch(cloud.u, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ s: cloud.s }, body)) });
+  if (rotating && body.a !== 'rotate' && body.a !== 'cfg') await rotating; // 合言葉の切り替えが終わるまで待つ
+  const sentS = body.s || cloud.s;
+  const r = await fetch(cloud.u, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ s: sentS }, body)) });
   const j = await r.json();
   if (!j.ok) {
-    if (j.err === 'auth') { revoked = true; showCloud(); throw new Error('この録画用iPhoneは無効です'); }
+    // 合言葉の切り替え中に古い合言葉で送ったものは「無効」と判断しない
+    if (j.err === 'auth' && !rotating && cloud && sentS === cloud.s) { revoked = true; showCloud(); throw new Error('この録画用iPhoneは無効です'); }
     throw new Error(j.err || '失敗');
   }
   return j;
 }
-let cloudMsg = '', revoked = false;
+let cloudMsg = '', revoked = false, rotating = null;
 function showCloud() {
   $('cloudInfo').textContent = !cloud ? '未接続' : revoked ? '⚠ 別のiPhoneに引き継がれたため、この端末は無効になりました' : ('接続済み' + (cloudMsg ? '・' + cloudMsg : ''));
   $('cloudBtn').style.display = cloud ? 'none' : '';
@@ -792,14 +795,24 @@ async function deliverBoxes() {
 setInterval(deliverBoxes, 30000);
 
 // 以前の方式のQRに入っていた合言葉を無効にするため、合言葉を一度だけ新しくする
+// 新しい合言葉は送る前に保存しておき、途中で通信が切れても、次に起動したときに確かめられるようにする
 async function upgradeCloud() {
   if (!cloud || cloud.v2) return;
-  try {
-    const ns = rnd(40);
-    await api({ a: 'rotate', ns });
-    cloud.s = ns; cloud.v2 = true; delete cloud.t;
-    localStorage.setItem('doorcam-cloud', JSON.stringify(cloud));
-  } catch (e) {}
+  rotating = (async () => {
+    try {
+      if (cloud.ns) { // 前回の切り替えが、窓口では済んでいるかもしれない
+        try { await api({ a: 'cfg', s: cloud.ns }); cloud.s = cloud.ns; } catch (e) {}
+      }
+      if (cloud.s !== cloud.ns) {
+        if (!cloud.ns) { cloud.ns = rnd(40); localStorage.setItem('doorcam-cloud', JSON.stringify(cloud)); }
+        await api({ a: 'rotate', ns: cloud.ns });
+        cloud.s = cloud.ns;
+      }
+      cloud.v2 = true; delete cloud.ns; delete cloud.t;
+      localStorage.setItem('doorcam-cloud', JSON.stringify(cloud));
+    } catch (e) {}
+  })();
+  await rotating; rotating = null; showCloud();
 }
 
 // ズーム・検知エリアを窓口にも控えておく（録画用iPhoneを引き継ぐときに使う）
