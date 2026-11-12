@@ -628,7 +628,7 @@ $('pv').addEventListener('touchend', e => {
 
 // ---------- 版の確認（古い画面が使い回されないように） ----------
 // iPhoneは同じページを最大10分ほど使い回すため、起動時に最新版があれば読み込み直す
-const APP_VER = 10;
+const APP_VER = 11;
 $('verInfo').textContent = 'アプリの版：' + APP_VER;
 (async () => {
   try {
@@ -822,6 +822,38 @@ setInterval(() => {
   const st = JSON.stringify({ zoom: cfg.zoom, mask: cfg.mask });
   if (st !== lastLocal) api({ a: 'local', zoom: cfg.zoom, mask: cfg.mask }).then(() => { lastLocal = st; }).catch(() => {});
 }, 60000);
+
+// ---------- ライブ（静止画） ----------
+// 5秒ごとに「誰か見ているか」を確かめ、見ている間だけ小さな写真を暗号化して送る。画面には何も出さない。
+// ここで何が起きても、録画とアップロードには影響しないようにする。
+const lc = document.createElement('canvas'), lx = lc.getContext('2d');
+let liveOn = false;
+async function liveShot() {
+  if (!live.videoWidth || !running) return null;
+  const w = Math.min(640, live.videoWidth), h = Math.round(live.videoHeight / live.videoWidth * w);
+  lc.width = w; lc.height = h; lx.drawImage(live, 0, 0, w, h);
+  for (const q of [0.6, 0.45, 0.3]) {
+    const blob = await new Promise(res => lc.toBlob(res, 'image/jpeg', q));
+    if (!blob) return null;
+    const d = b64(await encrypt(await blob.arrayBuffer()));
+    if (d.length < 90000) return d;
+  }
+  return null;
+}
+async function liveLoop() {
+  let wait = 5000;
+  try {
+    if (cloud && cloud.v2 && !revoked && !rotating) {
+      const d = liveOn ? await liveShot() : null;
+      const r = await api(d ? { a: 'livepoll', d } : { a: 'livepoll' });
+      if (r.want && !liveOn) { liveOn = true; wait = 0; }       // 見に来た → すぐ1枚目を送る
+      else if (r.want) wait = 700;                               // 見ている間は続けて送る
+      else liveOn = false;                                       // 誰も見ていない → 5秒おきの確認に戻る
+    }
+  } catch (e) { liveOn = false; wait = 10000; }
+  setTimeout(liveLoop, wait);
+}
+setTimeout(liveLoop, 8000);
 
 // ---------- 引き継ぎ（視聴アプリの「録画用iPhoneを引き継ぐ」QRから） ----------
 const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
