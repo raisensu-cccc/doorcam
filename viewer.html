@@ -205,7 +205,7 @@
     </div>
     <div class="line">
       <button id="pvPrev">◀ 新しい</button>
-      <label class="sub" style="flex:none;padding:0 6px"><input type="checkbox" id="pvAuto" checked> 続けて再生</label>
+      <label class="sub" style="flex:none;padding:0 6px"><input type="checkbox" id="pvAuto"> 続けて再生</label>
       <button id="pvNext">古い ▶</button>
     </div>
   </div>
@@ -216,7 +216,7 @@
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-const APP_VER = 6;
+const APP_VER = 7;
 $('ver').textContent = '視聴アプリの版：' + APP_VER;
 function toast(t, ms = 2200) { const e = $('toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => e.style.display = 'none', ms); }
 const pad = n => String(n).padStart(2, '0');
