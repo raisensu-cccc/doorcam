@@ -17,7 +17,13 @@
   html, body { margin:0; background:var(--bg); color:var(--fg); font-family:-apple-system, "Segoe UI", sans-serif; font-size:15px; }
   body { padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
   main { max-width:720px; margin:0 auto; padding:12px 16px 60px; }
-  header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:6px; }
+  header h1 { white-space:nowrap; }
+  header button { padding:8px 10px; white-space:nowrap; }
+  header > div { gap:6px !important; min-width:0; }
+  header .badge { min-width:0; overflow:hidden; text-overflow:ellipsis; flex-shrink:1; }
+  header h1, header button { flex-shrink:0; }
+  #liveBtn { background:#7f1d1d; }
   h1 { font-size:18px; margin:4px 0; }
   h2 { font-size:15px; margin:18px 0 8px; }
   button, select { font-size:15px; padding:9px 13px; border-radius:8px; border:0; color:#fff; background:#333; }
@@ -54,6 +60,13 @@
   #hoQr #hoBox { display:flex; justify-content:center; margin:16px 0; }
   textarea { width:100%; min-height:80px; background:#111; color:#eee; border:1px solid #333; border-radius:8px; padding:8px; font-size:13px; }
   /* 再生画面 */
+  #liveScr { position:fixed; inset:0; background:#000; z-index:46; display:none; flex-direction:column; }
+  #liveScr .top { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:calc(env(safe-area-inset-top) + 8px) 14px 8px; }
+  #liveStage { flex:1; min-height:0; position:relative; overflow:hidden; touch-action:none; }
+  #liveImg { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; transform-origin:0 0; }
+  #liveMsg { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; color:#ddd; font-size:15px; padding:20px; line-height:1.7; }
+  #liveMore { position:absolute; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center; gap:14px; background:rgba(0,0,0,.75); color:#fff; font-size:16px; }
+  .liveDot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--red); margin-right:6px; vertical-align:middle; }
   #pv { position:fixed; inset:0; background:#000; z-index:45; display:none; flex-direction:column; }
   #pv .top { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:calc(env(safe-area-inset-top) + 8px) 14px 8px; }
   #stage { flex:1; min-height:0; position:relative; overflow:hidden; touch-action:none; }
@@ -76,6 +89,7 @@
     <h1>ドアカメラ</h1>
     <div style="display:flex;gap:8px;align-items:center">
       <span class="badge" id="viewers">視聴中 -台</span>
+      <button id="liveBtn">ライブ</button>
       <button id="reloadBtn">更新</button>
       <button id="setBtn">設定</button>
     </div>
@@ -152,6 +166,23 @@
   </div>
 </div>
 
+<!-- ライブ（静止画） -->
+<div id="liveScr">
+  <div class="top">
+    <div><div><span class="liveDot"></span>ライブ（静止画）</div><div class="sub" id="liveInfo">接続中…</div></div>
+    <button id="liveClose">閉じる</button>
+  </div>
+  <div id="liveStage">
+    <img id="liveImg" alt="">
+    <div id="liveMsg">録画用iPhoneに接続しています…<br><span class="sub">表示まで5〜10秒ほどかかります</span></div>
+    <div id="liveMore">
+      <div>5分たちました。続けて見ますか？</div>
+      <div style="display:flex;gap:10px"><button class="primary" id="liveCont">続けて見る</button><button id="liveEnd">閉じる</button></div>
+    </div>
+  </div>
+  <div class="sub" style="text-align:center;padding:8px 12px calc(env(safe-area-inset-bottom) + 12px)">1〜2秒ごとに写真が新しくなります（音声なし）。2本指で拡大・ダブルタップで元に戻す</div>
+</div>
+
 <!-- 再生画面 -->
 <div id="pv">
   <div class="top">
@@ -185,7 +216,7 @@
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-const APP_VER = 5;
+const APP_VER = 6;
 $('ver').textContent = '視聴アプリの版：' + APP_VER;
 function toast(t, ms = 2200) { const e = $('toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => e.style.display = 'none', ms); }
 const pad = n => String(n).padStart(2, '0');
@@ -226,7 +257,7 @@ async function api(body) {
 function lostAccess() {
   localStorage.removeItem('doorcam-view'); cloud = null; aesKey = null; tok = null;
   setupNote = 'この端末の登録は解除されています。見るには、もう一度登録の申請をしてください。';
-  ['pv', 'settings', 'hoQr'].forEach(id => { $(id).style.display = 'none'; });
+  liveStop(); ['pv', 'settings', 'hoQr', 'liveScr'].forEach(id => { $(id).style.display = 'none'; });
   boot();
 }
 
@@ -715,6 +746,97 @@ $('forget').onclick = async () => {
   $('settings').style.display = 'none'; boot();
 };
 
+// ---------- ライブ（静止画） ----------
+// 見ている間、窓口に1秒ごとに問い合わせる。録画用iPhoneはそれに気づくと写真を送り始める。5分で一度止める。
+const LIVE_MAX = 5 * 60000;
+let liveRun = 0, liveSince = 0, liveLastAt = 0, liveStart = 0, liveUrl = null, liveTimer = null;
+$('liveBtn').onclick = () => {
+  if (!cloud) return;
+  pushLayer('live');
+  $('liveScr').style.display = 'flex';
+  liveResetZoom(); $('liveImg').removeAttribute('src');
+  $('liveMsg').style.display = 'flex'; $('liveMsg').innerHTML = '録画用iPhoneに接続しています…<br><span class="sub">表示まで5〜10秒ほどかかります</span>';
+  liveBegin();
+};
+function liveBegin() {
+  $('liveMore').style.display = 'none';
+  liveStart = Date.now(); liveLastAt = 0; liveSince = 0;
+  const my = ++liveRun; liveTick(my);
+  clearInterval(liveTimer); liveTimer = setInterval(liveInfo, 1000);
+}
+function liveStop() { liveRun++; clearInterval(liveTimer); }
+function hideLive() {
+  liveStop(); $('liveScr').style.display = 'none';
+  if (liveUrl) { URL.revokeObjectURL(liveUrl); liveUrl = null; }
+}
+function closeLive() { closeLayer('live', hideLive); }
+$('liveClose').onclick = closeLive;
+$('liveEnd').onclick = closeLive;
+$('liveCont').onclick = liveBegin;
+async function liveTick(my) {
+  if (my !== liveRun) return;
+  if (Date.now() - liveStart > LIVE_MAX) { liveStop(); $('liveMore').style.display = 'flex'; return; }
+  try {
+    const r = await api({ a: 'live', since: liveSince });
+    if (my !== liveRun) return;
+    if (r.frame) {
+      const buf = await decrypt(fromB64(r.frame.d));
+      if (my !== liveRun) return;
+      const url = URL.createObjectURL(new Blob([buf], { type: 'image/jpeg' }));
+      $('liveImg').src = url;
+      if (liveUrl) URL.revokeObjectURL(liveUrl);
+      liveUrl = url; liveSince = r.frame.t;
+      liveLastAt = Date.now() - Math.max(0, (r.now || Date.now()) - r.frame.t); // 写真が撮られたおよその時刻
+      $('liveMsg').style.display = 'none';
+    }
+  } catch (e) {}
+  setTimeout(() => liveTick(my), 900);
+}
+function liveInfo() {
+  const waited = Date.now() - liveStart;
+  if (!liveLastAt) {
+    $('liveInfo').textContent = '接続中…';
+    if (waited > 25000) { $('liveMsg').style.display = 'flex'; $('liveMsg').innerHTML = '録画用iPhoneから応答がありません。<br><span class="sub">録画用iPhoneの電源・通信と、録画アプリが開いているかを確認してください</span>'; }
+    return;
+  }
+  const age = Math.round((Date.now() - liveLastAt) / 1000), d = new Date(liveLastAt);
+  $('liveInfo').textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} の映像（${age}秒前）` + (age > 15 ? '・通信が遅れています' : '');
+}
+// 画面を離れたら止め、戻ってきたら再開する（見ていない間は録画用iPhoneも写真を送らない）
+document.addEventListener('visibilitychange', () => {
+  if ($('liveScr').style.display !== 'flex' || $('liveMore').style.display === 'flex') return;
+  if (document.visibilityState === 'visible') liveBegin(); else liveStop();
+});
+// 2本指で拡大・ダブルタップで元に戻す
+let lz = 1, lxo = 0, lyo = 0, lpinch = null, ltap = 0;
+const liveImgEl = $('liveImg'), liveStageEl = $('liveStage');
+function liveApply() { liveImgEl.style.transform = `translate(${lxo}px,${lyo}px) scale(${lz})`; }
+function liveResetZoom() { lz = 1; lxo = 0; lyo = 0; liveApply(); }
+liveStageEl.addEventListener('touchstart', e => {
+  if (e.touches.length === 2) {
+    const [a, b] = e.touches;
+    lpinch = { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), z: lz, x: lxo, y: lyo, cx: (a.clientX + b.clientX) / 2, cy: (a.clientY + b.clientY) / 2 };
+  } else if (e.touches.length === 1) {
+    const now = Date.now(); if (now - ltap < 300) liveResetZoom(); ltap = now;
+    lpinch = lz > 1 ? { pan: true, sx: e.touches[0].clientX, sy: e.touches[0].clientY, x: lxo, y: lyo } : null;
+  }
+}, { passive: true });
+liveStageEl.addEventListener('touchmove', e => {
+  if (!lpinch) return;
+  const rect = liveStageEl.getBoundingClientRect();
+  if (e.touches.length === 2 && !lpinch.pan) {
+    const [a, b] = e.touches;
+    const nz = Math.min(5, Math.max(1, lpinch.z * Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) / lpinch.d));
+    const px = lpinch.cx - rect.left, py = lpinch.cy - rect.top;
+    lxo = px - (px - lpinch.x) * nz / lpinch.z; lyo = py - (py - lpinch.y) * nz / lpinch.z; lz = nz;
+  } else if (e.touches.length === 1 && lpinch.pan) {
+    lxo = lpinch.x + e.touches[0].clientX - lpinch.sx; lyo = lpinch.y + e.touches[0].clientY - lpinch.sy;
+  }
+  if (lz <= 1) { lz = 1; lxo = 0; lyo = 0; }
+  liveApply();
+}, { passive: true });
+liveStageEl.addEventListener('touchend', e => { if (e.touches.length === 0) lpinch = null; }, { passive: true });
+
 // ---------- 版の確認（古い画面が使い回されないように） ----------
 (async () => {
   try {
@@ -760,7 +882,8 @@ ensureGuard();
 document.addEventListener('pointerdown', ensureGuard, true);
 window.addEventListener('popstate', () => {
   let closed = true;
-  if ($('pv').style.display === 'flex') closePlayer();
+  if ($('liveScr').style.display === 'flex') hideLive();
+  else if ($('pv').style.display === 'flex') closePlayer();
   else if ($('hoQr').style.display === 'block') hideHo();
   else if ($('settings').style.display === 'block') $('settings').style.display = 'none';
   else if ($('scan').style.display === 'block') stopScan();
@@ -778,6 +901,7 @@ async function boot() {
   $('home').style.display = cloud ? 'block' : 'none';
   $('setBtn').style.display = cloud ? '' : 'none';
   $('reloadBtn').style.display = cloud ? '' : 'none';
+  $('liveBtn').style.display = cloud ? '' : 'none';
   if (!cloud) { $('viewers').textContent = pend ? '承認待ち' : '未登録'; renderSetup(); if (pend) pollStatus(); return; }
   if (invCode) { invCode = null; clearHash(); toast('この端末はすでに登録済みです'); }
   await openThumbDB();
