@@ -160,7 +160,7 @@ let cfg = Object.assign({}, DEF);
 try { Object.assign(cfg, JSON.parse(localStorage.getItem('doorcam-cfg') || '{}')); } catch (e) {}
 const saveCfg = () => { try { localStorage.setItem('doorcam-cfg', JSON.stringify(cfg)); } catch (e) {} };
 
-const PRE_MS = 1000, POST_MS = 3000, MAX_MS = 120000, FPS = 15;
+const PRE_MS = 1000, POST_MS = 6000, MAX_MS = 120000, FPS = 15;
 
 // ---------- 保存（IndexedDB） ----------
 let db;
@@ -628,7 +628,7 @@ $('pv').addEventListener('touchend', e => {
 
 // ---------- 版の確認（古い画面が使い回されないように） ----------
 // iPhoneは同じページを最大10分ほど使い回すため、起動時に最新版があれば読み込み直す
-const APP_VER = 11;
+const APP_VER = 12;
 $('verInfo').textContent = 'アプリの版：' + APP_VER;
 (async () => {
   try {
