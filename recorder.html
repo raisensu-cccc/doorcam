@@ -122,7 +122,9 @@
   </div>
   <div class="panel">
     <div class="row"><label>クラウド保存</label><span class="sub" id="cloudInfo">未接続</span></div>
+    <div class="row"><label>未送信</label><span class="sub" id="pendInfo">-</span></div>
     <div class="btns">
+      <button class="primary" id="resendBtn">今すぐ再送</button>
       <button class="primary" id="cloudBtn">クラウドに接続（はじめての設定）</button>
       <button id="hoScanBtn">引き継ぎQRを読み取る</button>
       <button id="qrBtn" disabled>視聴する端末を追加（QR）</button>
@@ -137,7 +139,20 @@
 <div id="list">
   <div class="row"><h1 style="margin:0">録画一覧</h1><button id="closeList">閉じる</button></div>
   <div class="sub" id="listUsage"></div>
+  <div class="btns" style="margin:8px 0">
+    <button id="selAll">すべて選択</button>
+    <button id="selPend">未送信を選択</button>
+    <button id="selNone">選択解除</button>
+    <button class="warn" id="bulkDel" disabled>選択した録画を削除（0件）</button>
+  </div>
   <div id="clips"></div>
+</div>
+
+<div id="confirmBox" style="position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;padding:24px">
+  <div style="background:var(--bg);border:1px solid #444;border-radius:14px;padding:20px;max-width:340px;width:100%">
+    <div id="confirmMsg" style="white-space:pre-line;font-size:16px;line-height:1.6;margin-bottom:16px"></div>
+    <div class="btns"><button id="confirmNo">いいえ</button><button class="warn" id="confirmYes">はい</button></div>
+  </div>
 </div>
 
 <div id="pv">
@@ -155,9 +170,19 @@
 const $ = id => document.getElementById(id);
 
 // ---------- 設定 ----------
-const DEF = { zoom: 1, sens: 60, mask: Array(144).fill(1), dim: '1', audio: '1', cap: '20' };
+const DEF = { zoom: 1, sens: 60, mask: Array(576).fill(1), dim: '1', audio: '1', cap: '20' };
 let cfg = Object.assign({}, DEF);
 try { Object.assign(cfg, JSON.parse(localStorage.getItem('doorcam-cfg') || '{}')); } catch (e) {}
+// 以前の144マスの指定は、各マスを縦横2分割して576マスに引き継ぐ
+function fixMask(m) {
+  if (!Array.isArray(m)) return Array(576).fill(1);
+  if (m.length === 576) return m;
+  if (m.length !== 144) return Array(576).fill(1);
+  const C = cfg.maskOri === 'l' ? 16 : 9, C2 = C * 2, R2 = (144 / C) * 2, out = [];
+  for (let y = 0; y < R2; y++) for (let x = 0; x < C2; x++) out.push(m[Math.floor(y / 2) * C + Math.floor(x / 2)]);
+  return out;
+}
+cfg.mask = fixMask(cfg.mask);
 const saveCfg = () => { try { localStorage.setItem('doorcam-cfg', JSON.stringify(cfg)); } catch (e) {} };
 
 const PRE_MS = 1000, POST_MS = 6000, MAX_MS = 120000, FPS = 15;
@@ -216,22 +241,22 @@ $('dim').onchange = e => { cfg.dim = e.target.value; saveCfg(); touch(); };
 $('audio').onchange = e => { cfg.audio = e.target.value; saveCfg(); };
 $('cap').onchange = async e => { cfg.cap = e.target.value; saveCfg(); await enforceCap(); showUsage(); };
 
-// 検知エリア（144マス。暗いマスは検知しない）
-// 映像が縦長なら 9列×16行、横長なら 16列×9行。マスは映像の実際の表示位置にぴったり重ねる
+// 検知エリア（576マス。暗いマスは検知しない）
+// 映像が縦長なら 18列×32行、横長なら 32列×18行（以前の各マスを縦横2分割＝4分割）。マスは映像の実際の表示位置にぴったり重ねる
 const grid = $('grid');
-for (let i = 0; i < 144; i++) { const d = document.createElement('div'); grid.appendChild(d); }
-let cols = 16, rows = 9;
+for (let i = 0; i < 576; i++) { const d = document.createElement('div'); grid.appendChild(d); }
+let cols = 32, rows = 18;
 function layoutGrid() {
   const lv = $('live'), vw = lv.videoWidth, vh = lv.videoHeight, box = $('areaView');
   if (!vw || !vh) return;
   const portrait = vh > vw;
-  const nc = portrait ? 9 : 16, nr = portrait ? 16 : 9;
+  const nc = portrait ? 18 : 32, nr = portrait ? 32 : 18;
   // 以前の版で保存したマス指定は位置がずれているので、一度だけ全体に戻す
-  if (!cfg.maskOri) cfg.mask = Array(144).fill(1);
+  if (!cfg.maskOri) cfg.mask = Array(576).fill(1);
   if (nc !== cols) {
     cols = nc; rows = nr;
     // 向きが変わったら、以前のマス指定は合わなくなるので全体に戻す
-    if (cfg.maskOri && cfg.maskOri !== (portrait ? 'p' : 'l')) cfg.mask = Array(144).fill(1);
+    if (cfg.maskOri && cfg.maskOri !== (portrait ? 'p' : 'l')) cfg.mask = Array(576).fill(1);
   }
   cfg.maskOri = portrait ? 'p' : 'l';
   grid.style.gridTemplateColumns = `repeat(${cols},1fr)`;
@@ -249,7 +274,7 @@ setInterval(layoutGrid, 3000);
 function drawGrid() {
   [...grid.children].forEach((d, i) => d.classList.toggle('off', !cfg.mask[i]));
   const on = cfg.mask.filter(Boolean).length;
-  $('areaInfo').textContent = on === 144 ? '映像全体' : `${on}/144マス`;
+  $('areaInfo').textContent = on === 576 ? '映像全体' : `${on}/576マス`;
 }
 drawGrid();
 let editing = false, paintVal = 1;
@@ -267,7 +292,7 @@ function setEditing(on) {
 }
 $('areaBtn').onclick = () => { if (!stream) { alert('先に「監視開始」を押してカメラを起動してください'); return; } setEditing(true); };
 $('areaDone').onclick = () => setEditing(false);
-$('areaReset').onclick = () => { cfg.mask = Array(144).fill(1); drawGrid(); };
+$('areaReset').onclick = () => { cfg.mask = Array(576).fill(1); drawGrid(); };
 $('setBtn').onclick = () => { $('settings').style.display = 'block'; showUsage(); };
 $('closeSet').onclick = () => { $('settings').style.display = 'none'; touch(); };
 function cellAt(ev) {
@@ -400,8 +425,8 @@ const dctx = dc.getContext('2d', { willReadFrequently: true });
 let prevGray = null, prevMean = 0, hits = 0;
 function detectTick() {
   if (!running || !live.videoWidth) return;
-  // 映像全体を縮小して調べる（縦長なら54×96、横長なら96×54。1マス＝6×6ピクセル）
-  const W = cols * 6, H = rows * 6;
+  // 映像全体を縮小して調べる（縦長なら54×96、横長なら96×54。1マス＝3×3ピクセル）
+  const W = cols * 3, H = rows * 3;
   if (dc.width !== W || dc.height !== H) { dc.width = W; dc.height = H; prevGray = null; }
   dctx.drawImage(live, 0, 0, W, H);
   const px = dctx.getImageData(0, 0, W, H).data;
@@ -415,7 +440,7 @@ function detectTick() {
     if (Math.abs(mean - prevMean) < 18) {
       let changed = 0, area = 0;
       for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-        if (!cfg.mask[Math.floor(y / 6) * cols + Math.floor(x / 6)]) continue;
+        if (!cfg.mask[Math.floor(y / 3) * cols + Math.floor(x / 3)]) continue;
         area++;
         const k = y * W + x;
         if (Math.abs(g[k] - prevGray[k]) > 25) changed++;
@@ -563,8 +588,32 @@ setInterval(() => {
 
 // ---------- 録画一覧 ----------
 let playingUrl = null;
+const chks = () => [...$('clips').querySelectorAll('input[type=checkbox]')];
+function updBulk() {
+  const n = chks().filter(c => c.checked).length;
+  $('bulkDel').textContent = `選択した録画を削除（${n}件）`; $('bulkDel').disabled = n === 0;
+}
+$('selAll').onclick = () => { chks().forEach(c => c.checked = true); updBulk(); };
+$('selPend').onclick = () => { chks().forEach(c => c.checked = c.dataset.up === '0'); updBulk(); };
+$('selNone').onclick = () => { chks().forEach(c => c.checked = false); updBulk(); };
+function askYesNo(msg) {
+  return new Promise(res => {
+    $('confirmMsg').textContent = msg; $('confirmBox').style.display = 'flex';
+    const done = v => { $('confirmBox').style.display = 'none'; res(v); };
+    $('confirmYes').onclick = () => done(true); $('confirmNo').onclick = () => done(false);
+  });
+}
+$('bulkDel').onclick = async () => {
+  const sel = chks().filter(c => c.checked);
+  if (!sel.length) return;
+  const pend = sel.filter(c => c.dataset.up === '0').length;
+  if (!await askYesNo(`${sel.length}件の録画を本当に削除しますか？` + (pend ? `\n（うち${pend}件は未送信のため、クラウドにも残りません）` : '') + '\n元に戻せません。')) return;
+  $('bulkDel').disabled = true;
+  for (const c of sel) { try { await delClip(c.dataset.name); } catch (e) {} }
+  await openList(); showUsage(); showPending();
+};
 async function openList() {
-  $('list').style.display = 'block';
+  $('list').style.display = 'block'; updBulk();
   await showUsage();
   const box = $('clips'); box.innerHTML = '';
   const list = await allMeta();
@@ -572,10 +621,13 @@ async function openList() {
   clipList = list;
   for (const [idx, m] of list.entries()) {
     const row = document.createElement('div'); row.className = 'clip';
-    const info = document.createElement('div');
+    const chk = document.createElement('input'); chk.type = 'checkbox'; chk.dataset.name = m.name; chk.dataset.up = m.uploaded ? '1' : '0';
+    chk.style.cssText = 'width:22px;height:22px;flex:none';
+    chk.onchange = updBulk;
+    const info = document.createElement('div'); info.style.flex = '1';
     info.innerHTML = `<div class="name"></div><div class="sub"></div>`;
     info.firstChild.textContent = m.name;
-    info.lastChild.textContent = `${m.cont ? '前の続き・' : ''}${m.dur}秒・${(m.size / 1024 / 1024).toFixed(1)}MB`;
+    info.lastChild.textContent = `${m.cont ? '前の続き・' : ''}${m.dur}秒・${(m.size / 1024 / 1024).toFixed(1)}MB・${m.uploaded ? '送信済み' : '未送信'}`;
     const btns = document.createElement('div'); btns.className = 'btns'; btns.style.marginTop = 0;
     const play = document.createElement('button'); play.textContent = '再生';
     play.onclick = () => playAt(idx);
@@ -589,7 +641,7 @@ async function openList() {
     const del = document.createElement('button'); del.textContent = '削除'; del.className = 'warn';
     del.onclick = async () => { if (confirm(m.name + ' を削除しますか？')) { await delClip(m.name); openList(); } };
     btns.append(play, share, del);
-    row.append(info, btns); box.appendChild(row);
+    row.append(chk, info, btns); box.appendChild(row);
   }
 }
 $('listBtn').onclick = openList;
@@ -628,7 +680,7 @@ $('pv').addEventListener('touchend', e => {
 
 // ---------- 版の確認（古い画面が使い回されないように） ----------
 // iPhoneは同じページを最大10分ほど使い回すため、起動時に最新版があれば読み込み直す
-const APP_VER = 12;
+const APP_VER = 14;
 $('verInfo').textContent = 'アプリの版：' + APP_VER;
 (async () => {
   try {
@@ -648,8 +700,16 @@ const rnd = n => b64(crypto.getRandomValues(new Uint8Array(n))).replace(/[+/=]/g
 async function api(body) {
   if (rotating && body.a !== 'rotate' && body.a !== 'cfg') await rotating; // 合言葉の切り替えが終わるまで待つ
   const sentS = body.s || cloud.s;
-  const r = await fetch(cloud.u, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ s: sentS }, body)) });
-  const j = await r.json();
+  // 通信が途中で止まったまま返ってこない場合に備え、90秒で打ち切って失敗扱いにする
+  upAbort = new AbortController();
+  const to = setTimeout(() => upAbort.abort(), 90000);
+  let j;
+  try {
+    const r = await fetch(cloud.u, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ s: sentS }, body)), signal: upAbort.signal });
+    j = await r.json();
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? '通信が止まったため中断' : (e.message || '通信失敗'));
+  } finally { clearTimeout(to); }
   if (!j.ok) {
     // 合言葉の切り替え中に古い合言葉で送ったものは「無効」と判断しない
     if (j.err === 'auth' && !rotating && cloud && sentS === cloud.s) { revoked = true; showCloud(); throw new Error('この録画用iPhoneは無効です'); }
@@ -657,7 +717,7 @@ async function api(body) {
   }
   return j;
 }
-let cloudMsg = '', revoked = false, rotating = null;
+let cloudMsg = '', revoked = false, rotating = null, upAbort = null;
 function showCloud() {
   $('cloudInfo').textContent = !cloud ? '未接続' : revoked ? '⚠ 別のiPhoneに引き継がれたため、この端末は無効になりました' : ('接続済み' + (cloudMsg ? '・' + cloudMsg : ''));
   $('cloudBtn').style.display = cloud ? 'none' : '';
@@ -698,15 +758,34 @@ async function encrypt(buf) {
 
 // アップロード：まだ送っていない動画を古い順に、3MBずつ分けて送る。失敗したら後でやり直す
 const PART = 3 * 1024 * 1024;
-let uploading = false, upTimer = null;
+let uploading = false, upTimer = null, upRun = 0;
+async function showPending() {
+  try {
+    if (!db) return;
+    const n = (await allMeta()).filter(m => !m.uploaded).length;
+    $('pendInfo').textContent = !cloud ? '-' : n === 0 ? 'なし（すべて送信済み）' : n + '件' + (uploading ? '（送信中…）' : '（待機中）');
+  } catch (e) {}
+}
+setInterval(showPending, 3000);
+$('resendBtn').onclick = () => {
+  // 止まっている送信があれば打ち切って、最初からやり直す
+  upRun++; // 古いループの後始末が新しいループを邪魔しないようにする
+  try { if (upAbort) upAbort.abort(); } catch (e) {}
+  uploading = false;
+  cloudMsg = '再送を開始しました'; showCloud();
+  clearTimeout(upTimer); upTimer = setTimeout(uploadLoop, 100);
+  showPending();
+};
 function kickUpload() { clearTimeout(upTimer); upTimer = setTimeout(uploadLoop, 1000); }
 async function uploadLoop() {
   if (uploading || !cloud || !db) return;
   uploading = true;
+  const run = ++upRun;
   let wait = 30000;
   try {
     const pending = (await allMeta()).filter(m => !m.uploaded).reverse();
     for (const m of pending) {
+      if (run !== upRun) return; // 「今すぐ再送」で新しいループに交代した
       const r = await reqP(tx('blobs').objectStore('blobs').get(m.name));
       if (!r) continue;
       const raw = (r instanceof Blob) ? await r.arrayBuffer() : r.buf;
@@ -722,15 +801,18 @@ async function uploadLoop() {
       const t = tx('meta', 'readwrite'); t.objectStore('meta').put(m);
       await new Promise(res => { t.oncomplete = res; });
       cloudMsg = '最終送信 ' + m.name.slice(9, 11) + ':' + m.name.slice(11, 13);
-      showCloud();
+      showCloud(); showPending();
     }
     wait = 60000;
   } catch (e) {
     cloudMsg = '送信待ち（' + e.message + '）';
     showCloud();
   } finally {
-    uploading = false;
-    clearTimeout(upTimer); upTimer = setTimeout(uploadLoop, wait);
+    if (run === upRun) { // 交代済みの古いループは何もしない
+      uploading = false;
+      clearTimeout(upTimer); upTimer = setTimeout(uploadLoop, wait);
+    }
+    showPending();
   }
 }
 
@@ -751,7 +833,7 @@ function applyRemote(c) {
     if (c.dim != null) { cfg.dim = String(c.dim); $('dim').value = cfg.dim; }
     if (c.cap) { cfg.cap = String(c.cap); $('cap').value = cfg.cap; enforceCap(); }
     if (c.zoom) { cfg.zoom = Number(c.zoom); $('zoom').value = cfg.zoom; if (vtrack) applyZoom(cfg.zoom); }
-    if (Array.isArray(c.mask) && c.mask.length === 144) { cfg.mask = c.mask; drawGrid(); }
+    if (Array.isArray(c.mask) && (c.mask.length === 144 || c.mask.length === 576)) { cfg.mask = fixMask(c.mask); drawGrid(); }
     if (c.audio != null && String(c.audio) !== cfg.audio) { cfg.audio = String(c.audio); $('audio').value = cfg.audio; saveCfg(); if (wanted && !rec) start(); }
     saveCfg();
 }
@@ -896,7 +978,7 @@ async function doRedeem(ho) {
     if (r.cfg) applyRemote(r.cfg);
     if (r.local) {
       if (r.local.zoom) { cfg.zoom = Number(r.local.zoom); $('zoom').value = cfg.zoom; if (vtrack) applyZoom(cfg.zoom); }
-      if (Array.isArray(r.local.mask) && r.local.mask.length === 144) { cfg.mask = r.local.mask; drawGrid(); }
+      if (Array.isArray(r.local.mask) && (r.local.mask.length === 144 || r.local.mask.length === 576)) { cfg.mask = fixMask(r.local.mask); drawGrid(); }
       saveCfg();
     }
     history.replaceState(null, '', location.pathname);
