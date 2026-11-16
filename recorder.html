@@ -40,6 +40,11 @@
   #list { position:fixed; inset:0; background:var(--bg); z-index:40; display:none; overflow:auto; padding:calc(env(safe-area-inset-top) + 12px) 16px 40px; }
   .clip { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:10px 0; border-bottom:1px solid #222; }
   .clip .name { font-variant-numeric:tabular-nums; }
+  .clip .name { font-size:14px; }
+  .clip > div:nth-child(2) { min-width:0; }
+  .clip .btns { flex-wrap:nowrap; flex:none; gap:6px; margin-top:0; }
+  .clip .btns button { font-size:14px; padding:8px 9px; white-space:nowrap; }
+  .clip .sub { font-size:12px; }
   .view.full { position:fixed; inset:0; z-index:30; width:100vw; height:100vh; height:100dvh; min-height:0; border-radius:0; }
   #settings { position:fixed; inset:0; background:var(--bg); z-index:40; display:none; overflow:auto; padding:calc(env(safe-area-inset-top) + 12px) 16px 40px; }
   #areaScreen { position:fixed; inset:0; background:var(--bg); z-index:42; display:none; flex-direction:column; padding:calc(env(safe-area-inset-top) + 10px) 16px calc(env(safe-area-inset-bottom) + 12px); }
@@ -680,7 +685,7 @@ $('pv').addEventListener('touchend', e => {
 
 // ---------- 版の確認（古い画面が使い回されないように） ----------
 // iPhoneは同じページを最大10分ほど使い回すため、起動時に最新版があれば読み込み直す
-const APP_VER = 14;
+const APP_VER = 15;
 $('verInfo').textContent = 'アプリの版：' + APP_VER;
 (async () => {
   try {
