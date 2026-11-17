@@ -35,7 +35,7 @@
   .sub { color:var(--sub); font-size:13px; }
   .btns { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
   #status { font-size:13px; color:var(--sub); margin-top:6px; min-height:18px; }
-  #dark { position:fixed; inset:0; background:#000; display:none; z-index:50; }
+  #dark { position:fixed; inset:0; background:rgba(0,0,0,.97); display:none; z-index:50; }
   #darkRec { position:absolute; color:var(--red); font-size:13px; font-weight:700; display:none; }
   #list { position:fixed; inset:0; background:var(--bg); z-index:40; display:none; overflow:auto; padding:calc(env(safe-area-inset-top) + 12px) 16px 40px; }
   .clip { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:10px 0; border-bottom:1px solid #222; }
@@ -411,23 +411,29 @@ $('view').addEventListener('click', () => { if (!editing) $('view').classList.to
 // ---------- 1秒前から残すための映像バッファ ----------
 const frames = []; // {t, bmp}
 let lastCap = 0;
+// 映像の更新通知（画面に見えていないと止まることがある）には頼らず、一定間隔のタイマーで読み取る
 function startCapture() {
-  const onFrame = async () => {
-    const now = performance.now();
-    if (now - lastCap >= 1000 / FPS - 5 && live.videoWidth) {
-      lastCap = now;
-      try { const bmp = await createImageBitmap(live); frames.push({ t: now, bmp }); } catch (e) {}
-      while (frames.length && frames[0].t < now - PRE_MS - 700) frames.shift().bmp.close();
-    }
-    if (live.requestVideoFrameCallback) live.requestVideoFrameCallback(onFrame); else setTimeout(onFrame, 1000 / FPS);
-  };
-  if (!startCapture.on) { startCapture.on = true; onFrame(); }
+  if (startCapture.on) return;
+  startCapture.on = true;
+  let busy = false;
+  setInterval(async () => {
+    if (busy || !live.videoWidth) return;
+    busy = true;
+    try {
+      const now = performance.now();
+      const bmp = await createImageBitmap(live);
+      frames.push({ t: now, bmp }); lastCap = now;
+      // 最後の1枚は残す（映像が止まっても、描く絵がなくならないように）
+      while (frames.length > 1 && frames[0].t < now - PRE_MS - 700) frames.shift().bmp.close();
+    } catch (e) {}
+    busy = false;
+  }, 1000 / FPS);
 }
 
 // ---------- 動体検知 ----------
 const dc = document.createElement('canvas');
 const dctx = dc.getContext('2d', { willReadFrequently: true });
-let prevGray = null, prevMean = 0, hits = 0;
+let prevGray = null, prevMean = 0, hits = 0, lastFreshAt = performance.now();
 function detectTick() {
   if (!running || !live.videoWidth) return;
   // 映像全体を縮小して調べる（縦長なら54×96、横長なら96×54。1マス＝3×3ピクセル）
@@ -439,6 +445,10 @@ function detectTick() {
   let sum = 0;
   for (let i = 0, j = 0; i < px.length; i += 4, j++) { g[j] = (px[i] * 3 + px[i + 1] * 6 + px[i + 2]) / 10; sum += g[j]; }
   const mean = sum / g.length;
+  // 前回と1画素でも違えば「映像は更新されている」。完全に同じ絵が続くなら固まっている（真っ暗なときは判定しない）
+  if (prevGray && prevGray.length === g.length && mean >= 3) {
+    for (let k = 0; k < g.length; k++) if (g[k] !== prevGray[k]) { lastFreshAt = performance.now(); break; }
+  } else lastFreshAt = performance.now();
   let motion = false, ratio = 0;
   if (prevGray) {
     // 照明が一斉に変わったとき（廊下の電気など）は無視
@@ -462,6 +472,20 @@ function detectTick() {
 }
 setInterval(detectTick, 250);
 
+// ---------- 固まり監視 ----------
+// 映像が3秒以上まったく変わらなければ、録画をそこで区切って保存し、カメラを取り直す
+let recoverAt = 0;
+setInterval(() => {
+  if (!wanted || restarting || !running || document.visibilityState !== 'visible') return;
+  const now = performance.now();
+  if (now - lastFreshAt < 3000) return;
+  if (rec) { lastError = '映像が止まったため録画を区切りました'; stopRec(); }
+  if (now - recoverAt < 8000) return;
+  recoverAt = now;
+  try { live.play(); } catch (e) {}
+  setTimeout(() => { if (!restarting && performance.now() - lastFreshAt > 3000) start(); }, 2500);
+}, 1000);
+
 // ---------- 録画 ----------
 const rc = document.createElement('canvas'); rc.width = 1280; rc.height = 720;
 const rctx = rc.getContext('2d');
@@ -476,7 +500,10 @@ function drawDelayed() {
   const target = performance.now() - PRE_MS;
   let f = null;
   for (const fr of frames) { if (fr.t <= target) f = fr; else break; }
+  if (!f) f = frames[0];
   if (!f) return;
+  const nowP = performance.now();
+  if (rec && nowP - lastFreshAt < 1500) rec.liveSlots.add(Math.floor((nowP - rec.startLive) / 1000));
   if (rc.width !== f.bmp.width) { rc.width = f.bmp.width; rc.height = f.bmp.height; }
   rctx.drawImage(f.bmp, 0, 0);
   // 日時を映像に書き込む
@@ -497,7 +524,7 @@ function newRecorder(firstStart) {
   const type = ['video/mp4;codecs=avc1', 'video/mp4'].find(t => MediaRecorder.isTypeSupported(t)) || '';
   const mr = new MediaRecorder(recStream, type ? { mimeType: type, videoBitsPerSecond: 2500000 } : {});
   // 録画される映像は1秒遅れなので、ファイル名もその分さかのぼった時刻にする
-  const r = { mr, startLive: performance.now(), chunks: [], first: firstStart };
+  const r = { mr, startLive: performance.now(), chunks: [], first: firstStart, liveSlots: new Set() };
   r.name = stamp(new Date(Date.now() - PRE_MS));
   mr.ondataavailable = e => { if (e.data && e.data.size) r.chunks.push(e.data); };
   mr.onstop = () => saveRec(r);
@@ -556,7 +583,7 @@ async function saveRec(r) {
   while (names.has(name)) name = `${r.name}_${n++}`;
   const dur = Math.round(((r.endLive || performance.now()) - r.startLive) / 1000);
   try {
-    await putClip({ name, size: blob.size, dur, type: blob.type, cont: !r.first, uploaded: false, thumb: r.thumb || null }, blob);
+    await putClip({ name, size: blob.size, dur, live: r.liveSlots ? Math.min(dur, r.liveSlots.size) : null, type: blob.type, cont: !r.first, uploaded: false, thumb: r.thumb || null }, blob);
     kickUpload();
     savedCount++; lastSaved = name.slice(9, 11) + ':' + name.slice(11, 13) + ':' + name.slice(13, 15);
     await enforceCap();
@@ -632,7 +659,7 @@ async function openList() {
     const info = document.createElement('div'); info.style.flex = '1';
     info.innerHTML = `<div class="name"></div><div class="sub"></div>`;
     info.firstChild.textContent = m.name;
-    info.lastChild.textContent = `${m.cont ? '前の続き・' : ''}${m.dur}秒・${(m.size / 1024 / 1024).toFixed(1)}MB・${m.uploaded ? '送信済み' : '未送信'}`;
+    info.lastChild.textContent = `${m.cont ? '前の続き・' : ''}${m.dur}秒${m.live != null ? (m.dur - m.live >= 3 ? '（⚠映像' + m.live + '秒）' : '（映像' + m.live + '秒）') : ''}・${(m.size / 1024 / 1024).toFixed(1)}MB・${m.uploaded ? '送信済み' : '未送信'}`;
     const btns = document.createElement('div'); btns.className = 'btns'; btns.style.marginTop = 0;
     const play = document.createElement('button'); play.textContent = '再生';
     play.onclick = () => playAt(idx);
@@ -685,7 +712,7 @@ $('pv').addEventListener('touchend', e => {
 
 // ---------- 版の確認（古い画面が使い回されないように） ----------
 // iPhoneは同じページを最大10分ほど使い回すため、起動時に最新版があれば読み込み直す
-const APP_VER = 15;
+const APP_VER = 16;
 $('verInfo').textContent = 'アプリの版：' + APP_VER;
 (async () => {
   try {
