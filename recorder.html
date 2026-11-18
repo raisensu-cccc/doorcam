@@ -190,7 +190,7 @@ function fixMask(m) {
 cfg.mask = fixMask(cfg.mask);
 const saveCfg = () => { try { localStorage.setItem('doorcam-cfg', JSON.stringify(cfg)); } catch (e) {} };
 
-const PRE_MS = 1000, POST_MS = 6000, MAX_MS = 120000, FPS = 15;
+const PRE_MS = 1000, POST_MS = 6000, MAX_MS = 10000, FPS = 15;
 
 // ---------- 保存（IndexedDB） ----------
 let db;
@@ -409,24 +409,25 @@ setInterval(() => {
 $('view').addEventListener('click', () => { if (!editing) $('view').classList.toggle('full'); });
 
 // ---------- 1秒前から残すための映像バッファ ----------
-const frames = []; // {t, bmp}
+const frames = []; // {t, bmp}  ※bmpは複写用のcanvas
+const framePool = [];
 let lastCap = 0;
-// 映像の更新通知（画面に見えていないと止まることがある）には頼らず、一定間隔のタイマーで読み取る
+// 映像の更新通知（画面に見えていないと止まることがある）や、応答が返らなくなる恐れのある非同期の読み取りには頼らず、
+// 一定間隔のタイマーで、その場でcanvasに複写する（同期処理なので途中で止まらない）
 function startCapture() {
   if (startCapture.on) return;
   startCapture.on = true;
-  let busy = false;
-  setInterval(async () => {
-    if (busy || !live.videoWidth) return;
-    busy = true;
+  setInterval(() => {
+    if (!live.videoWidth) return;
     try {
       const now = performance.now();
-      const bmp = await createImageBitmap(live);
-      frames.push({ t: now, bmp }); lastCap = now;
+      const c = framePool.pop() || document.createElement('canvas');
+      if (c.width !== live.videoWidth || c.height !== live.videoHeight) { c.width = live.videoWidth; c.height = live.videoHeight; }
+      c.getContext('2d').drawImage(live, 0, 0);
+      frames.push({ t: now, bmp: c }); lastCap = now;
       // 最後の1枚は残す（映像が止まっても、描く絵がなくならないように）
-      while (frames.length > 1 && frames[0].t < now - PRE_MS - 700) frames.shift().bmp.close();
+      while (frames.length > 1 && frames[0].t < now - PRE_MS - 700) framePool.push(frames.shift().bmp);
     } catch (e) {}
-    busy = false;
   }, 1000 / FPS);
 }
 
@@ -486,9 +487,23 @@ setInterval(() => {
   setTimeout(() => { if (!restarting && performance.now() - lastFreshAt > 3000) start(); }, 2500);
 }, 1000);
 
+// 録画の途中で絵を描く処理が2秒以上止まったら、そこで区切って保存し、次の動きで新しく録画し直す
+setInterval(() => {
+  if (!rec || !lastDraw) return;
+  const now = performance.now();
+  if (now - lastDraw > 2000 || (running && lastCap && now - lastCap > 2000)) {
+    lastError = '映像の書き出しが止まったため録画を区切りました';
+    stopRec();
+  }
+}, 1000);
+
 // ---------- 録画 ----------
 const rc = document.createElement('canvas'); rc.width = 1280; rc.height = 720;
 const rctx = rc.getContext('2d');
+// 画面を暗くしても映像の書き出しが止まらないよう、録画用canvasをページ上の最前面に（ほぼ見えない大きさで）置いておく
+rc.style.cssText = 'position:fixed;right:0;bottom:0;width:2px;height:2px;opacity:.02;pointer-events:none;z-index:100';
+document.body.appendChild(rc);
+let lastDraw = 0;
 let rec = null; // {mr, startLive, name, chunks}
 let lastMotion = 0, drawTimer = null, recStream = null;
 
@@ -497,6 +512,7 @@ function stamp(d) { return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.ge
 function label(d) { return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
 
 function drawDelayed() {
+  lastDraw = performance.now();
   const target = performance.now() - PRE_MS;
   let f = null;
   for (const fr of frames) { if (fr.t <= target) f = fr; else break; }
@@ -565,8 +581,10 @@ function onMotion(m) {
     if (now - lastMotion >= POST_MS + PRE_MS) {
       stopRec();
     } else if (now - rec.startLive >= MAX_MS) {
-      // 2分を超えたら、すき間なく次の動画へ
-      const old = rec; rec = newRecorder(false); old.endLive = now; old.mr.stop();
+      // 10秒ごとに、すき間なく次の動画へ。映像の書き出し口も新しく作り直す（長く使うと止まる対策）
+      const old = rec, oldStream = recStream; recStream = null;
+      rec = newRecorder(false); old.endLive = now; old.mr.stop();
+      setTimeout(() => { try { oldStream && oldStream.getVideoTracks()[0].stop(); } catch (e) {} }, 3000);
     }
   } catch (e) {
     lastError = '録画を開始できませんでした：' + e.message;
@@ -712,7 +730,7 @@ $('pv').addEventListener('touchend', e => {
 
 // ---------- 版の確認（古い画面が使い回されないように） ----------
 // iPhoneは同じページを最大10分ほど使い回すため、起動時に最新版があれば読み込み直す
-const APP_VER = 16;
+const APP_VER = 17;
 $('verInfo').textContent = 'アプリの版：' + APP_VER;
 (async () => {
   try {
